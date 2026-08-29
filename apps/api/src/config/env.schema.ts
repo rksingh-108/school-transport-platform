@@ -35,6 +35,25 @@ export const envSchema = z.object({
   STORAGE_ACCESS_KEY: z.string().min(1),
   STORAGE_SECRET_KEY: z.string().min(1),
   STORAGE_BUCKET: z.string().min(1),
+
+  // Authentication — see docs/security.md#1-authentication and
+  // docs/adr/0004-auth-strategy.md. Distinct signing secrets per audience so a
+  // compromised staff secret cannot forge parent tokens (or vice versa) — a
+  // structural boundary, not just an `aud` claim check.
+  JWT_STAFF_SECRET: z.string().min(32, 'JWT_STAFF_SECRET must be at least 32 characters'),
+  JWT_PARENT_SECRET: z.string().min(32, 'JWT_PARENT_SECRET must be at least 32 characters'),
+  JWT_ISSUER: z.string().default('school-transport-platform'),
+  JWT_STAFF_AUDIENCE: z.string().default('school-transport-staff'),
+  JWT_PARENT_AUDIENCE: z.string().default('school-transport-parent'),
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  PASSWORD_RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+
+  // Failed-login protection (docs/security.md#1-authentication) — keyed by
+  // the raw submitted identifier, not a resolved account, so the lockout
+  // behavior itself never reveals whether an account exists.
+  FAILED_LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+  FAILED_LOGIN_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

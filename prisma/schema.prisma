@@ -48,8 +48,22 @@ enum SchoolStatus {
   TRIAL
 }
 
+// ACTIVE: can authenticate normally.
+// INVITED: account created by a school admin but the person has not yet set
+//   a password / completed onboarding — cannot authenticate until ACTIVE.
+//   (No invite-acceptance flow exists yet in Phase 1 Step 1; the state exists
+//   so account creation doesn't have to force an immediate password.)
+// SUSPENDED: temporarily blocked by a school/platform admin (e.g. policy
+//   violation, pending investigation) — cannot authenticate or refresh an
+//   existing session; reversible.
+// DISABLED: permanently deactivated (e.g. offboarded staff, closed account)
+//   — same authentication effect as SUSPENDED, distinguished for reporting/
+//   audit clarity, not treated as reversible by ordinary admin action.
+// See docs/security.md#7-account-states.
 enum AccountStatus {
   ACTIVE
+  INVITED
+  SUSPENDED
   DISABLED
 }
 
@@ -144,6 +158,27 @@ enum ActorType {
   SYSTEM
 }
 
+// Which identity table a token/session belongs to. Deliberately distinct
+// from ActorType (audit_logs) even though the values overlap conceptually —
+// this one has no SYSTEM case and exists specifically to keep the
+// staff/parent authentication audience boundary structural, not just a role
+// check. See docs/adr/0004-auth-strategy.md and docs/security.md.
+enum AuthPrincipalType {
+  STAFF
+  PARENT
+}
+
+// Why a refresh token stopped being valid — kept for audit/forensics.
+enum TokenRevokeReason {
+  ROTATED
+  LOGOUT
+  LOGOUT_ALL
+  REUSE_DETECTED
+  PASSWORD_CHANGED
+  ACCOUNT_SUSPENDED
+  EXPIRED_CLEANUP
+}
+
 // ---------------------------------------------------------------------------
 // Tenant root
 // ---------------------------------------------------------------------------
@@ -179,6 +214,8 @@ model School {
   notifications       Notification[]
   auditLogs           AuditLog[]
   files               File[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@map("schools")
 }
@@ -188,27 +225,27 @@ model School {
 // ---------------------------------------------------------------------------
 
 model User {
-  id                  String        @id @default(uuid())
-  schoolId            String        @map("school_id")
-  email               String
-  phone               String?
-  passwordHash        String        @map("password_hash")
-  fullName            String        @map("full_name")
-  status              AccountStatus @default(ACTIVE)
-  mfaEnabled          Boolean       @default(false) @map("mfa_enabled")
-  mfaSecretEncrypted  String?       @map("mfa_secret_encrypted")
-  lastLoginAt         DateTime?     @map("last_login_at")
-  createdAt           DateTime      @default(now()) @map("created_at")
-  updatedAt           DateTime      @updatedAt @map("updated_at")
-  deletedAt           DateTime?     @map("deleted_at")
+  id                 String        @id @default(uuid())
+  schoolId           String        @map("school_id")
+  email              String
+  phone              String?
+  passwordHash       String        @map("password_hash")
+  fullName           String        @map("full_name")
+  status             AccountStatus @default(ACTIVE)
+  mfaEnabled         Boolean       @default(false) @map("mfa_enabled")
+  mfaSecretEncrypted String?       @map("mfa_secret_encrypted")
+  lastLoginAt        DateTime?     @map("last_login_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
 
-  school              School          @relation(fields: [schoolId], references: [id])
-  userRoles           UserRole[]
-  driverProfile       Driver?
-  attendantProfile    Attendant?
-  verifiedRelationships ParentStudent[] @relation("ParentStudentVerifiedBy")
+  school                   School            @relation(fields: [schoolId], references: [id])
+  userRoles                UserRole[]
+  driverProfile            Driver?
+  attendantProfile         Attendant?
+  verifiedRelationships    ParentStudent[]   @relation("ParentStudentVerifiedBy")
   recordedAttendanceEvents AttendanceEvent[] @relation("AttendanceEventRecordedBy")
-  createdFiles        File[]          @relation("FileCreatedBy")
+  createdFiles             File[]            @relation("FileCreatedBy")
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -216,12 +253,12 @@ model User {
 }
 
 model Role {
-  id         String   @id @default(uuid())
-  schoolId   String?  @map("school_id")
-  key        String
-  name       String
-  isSystem   Boolean  @default(true) @map("is_system")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  schoolId  String?  @map("school_id")
+  key       String
+  name      String
+  isSystem  Boolean  @default(true) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at")
 
   school          School?          @relation(fields: [schoolId], references: [id])
   rolePermissions RolePermission[]
@@ -269,18 +306,18 @@ model UserRole {
 // ---------------------------------------------------------------------------
 
 model Student {
-  id               String        @id @default(uuid())
-  schoolId         String        @map("school_id")
-  admissionNumber  String        @map("admission_number")
-  fullName         String        @map("full_name")
-  dateOfBirth      DateTime?     @map("date_of_birth") @db.Date
-  grade            String?
-  section          String?
-  photoFileId      String?       @map("photo_file_id")
-  status           StudentStatus @default(ACTIVE)
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @updatedAt @map("updated_at")
-  deletedAt        DateTime?     @map("deleted_at")
+  id              String        @id @default(uuid())
+  schoolId        String        @map("school_id")
+  admissionNumber String        @map("admission_number")
+  fullName        String        @map("full_name")
+  dateOfBirth     DateTime?     @map("date_of_birth") @db.Date
+  grade           String?
+  section         String?
+  photoFileId     String?       @map("photo_file_id")
+  status          StudentStatus @default(ACTIVE)
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  deletedAt       DateTime?     @map("deleted_at")
 
   school         School          @relation(fields: [schoolId], references: [id])
   photo          File?           @relation("StudentPhoto", fields: [photoFileId], references: [id])
@@ -322,10 +359,10 @@ model ParentStudent {
   verifiedAt   DateTime? @map("verified_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  school  School  @relation(fields: [schoolId], references: [id])
-  parent  Parent  @relation(fields: [parentId], references: [id])
-  student Student @relation(fields: [studentId], references: [id])
-  verifier User?  @relation("ParentStudentVerifiedBy", fields: [verifiedBy], references: [id])
+  school   School  @relation(fields: [schoolId], references: [id])
+  parent   Parent  @relation(fields: [parentId], references: [id])
+  student  Student @relation(fields: [studentId], references: [id])
+  verifier User?   @relation("ParentStudentVerifiedBy", fields: [verifiedBy], references: [id])
 
   @@unique([parentId, studentId])
   @@index([schoolId])
@@ -352,28 +389,28 @@ model Bus {
   updatedAt          DateTime  @updatedAt @map("updated_at")
   deletedAt          DateTime? @map("deleted_at")
 
-  school     School      @relation(fields: [schoolId], references: [id])
-  devices    BusDevice[]
-  routes     Route[]
-  trips      Trip[]
-  gpsPoints  GpsPoint[]
+  school    School      @relation(fields: [schoolId], references: [id])
+  devices   BusDevice[]
+  routes    Route[]
+  trips     Trip[]
+  gpsPoints GpsPoint[]
 
   @@unique([schoolId, registrationNumber])
   @@map("buses")
 }
 
 model BusDevice {
-  id                String       @id @default(uuid())
-  schoolId          String       @map("school_id")
-  busId             String       @map("bus_id")
-  deviceType        DeviceType   @map("device_type")
-  externalDeviceId  String       @map("external_device_id")
-  status            DeviceStatus @default(ACTIVE)
-  lastSeenAt        DateTime?    @map("last_seen_at")
-  lastHealth        Json?        @map("last_health")
-  installedAt       DateTime?    @map("installed_at")
-  createdAt         DateTime     @default(now()) @map("created_at")
-  updatedAt         DateTime     @updatedAt @map("updated_at")
+  id               String       @id @default(uuid())
+  schoolId         String       @map("school_id")
+  busId            String       @map("bus_id")
+  deviceType       DeviceType   @map("device_type")
+  externalDeviceId String       @map("external_device_id")
+  status           DeviceStatus @default(ACTIVE)
+  lastSeenAt       DateTime?    @map("last_seen_at")
+  lastHealth       Json?        @map("last_health")
+  installedAt      DateTime?    @map("installed_at")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
 
   school    School     @relation(fields: [schoolId], references: [id])
   bus       Bus        @relation(fields: [busId], references: [id])
@@ -385,15 +422,15 @@ model BusDevice {
 }
 
 model Driver {
-  id             String       @id @default(uuid())
-  schoolId       String       @map("school_id")
-  userId         String       @unique @map("user_id")
-  licenseNumber  String       @map("license_number")
-  licenseExpiry  DateTime?    @map("license_expiry") @db.Date
-  status         ActiveStatus @default(ACTIVE)
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
-  deletedAt      DateTime?    @map("deleted_at")
+  id            String       @id @default(uuid())
+  schoolId      String       @map("school_id")
+  userId        String       @unique @map("user_id")
+  licenseNumber String       @map("license_number")
+  licenseExpiry DateTime?    @map("license_expiry") @db.Date
+  status        ActiveStatus @default(ACTIVE)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+  deletedAt     DateTime?    @map("deleted_at")
 
   school School @relation(fields: [schoolId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
@@ -423,15 +460,15 @@ model Attendant {
 // ---------------------------------------------------------------------------
 
 model Route {
-  id            String       @id @default(uuid())
-  schoolId      String       @map("school_id")
-  name          String
-  shift         Shift
-  status        ActiveStatus @default(ACTIVE)
-  defaultBusId  String?      @map("default_bus_id")
-  createdAt     DateTime     @default(now()) @map("created_at")
-  updatedAt     DateTime     @updatedAt @map("updated_at")
-  deletedAt     DateTime?    @map("deleted_at")
+  id           String       @id @default(uuid())
+  schoolId     String       @map("school_id")
+  name         String
+  shift        Shift
+  status       ActiveStatus @default(ACTIVE)
+  defaultBusId String?      @map("default_bus_id")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  deletedAt    DateTime?    @map("deleted_at")
 
   school     School      @relation(fields: [schoolId], references: [id])
   defaultBus Bus?        @relation(fields: [defaultBusId], references: [id])
@@ -442,15 +479,15 @@ model Route {
 }
 
 model RouteStop {
-  id                     String @id @default(uuid())
-  schoolId               String @map("school_id")
-  routeId                String @map("route_id")
-  sequenceNo             Int    @map("sequence_no")
-  name                   String
-  latitude               Float
-  longitude              Float
-  expectedOffsetMinutes  Int    @map("expected_offset_minutes")
-  radiusMeters           Int    @default(150) @map("radius_meters")
+  id                    String @id @default(uuid())
+  schoolId              String @map("school_id")
+  routeId               String @map("route_id")
+  sequenceNo            Int    @map("sequence_no")
+  name                  String
+  latitude              Float
+  longitude             Float
+  expectedOffsetMinutes Int    @map("expected_offset_minutes")
+  radiusMeters          Int    @default(150) @map("radius_meters")
 
   school       School        @relation(fields: [schoolId], references: [id])
   route        Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)
@@ -465,27 +502,27 @@ model RouteStop {
 // ---------------------------------------------------------------------------
 
 model Trip {
-  id           String     @id @default(uuid())
-  schoolId     String     @map("school_id")
-  routeId      String     @map("route_id")
-  busId        String     @map("bus_id")
-  driverId     String     @map("driver_id")
-  attendantId  String?    @map("attendant_id")
-  serviceDate  DateTime   @map("service_date") @db.Date
-  shift        Shift
-  status       TripStatus @default(SCHEDULED)
-  startedAt    DateTime?  @map("started_at")
-  endedAt      DateTime?  @map("ended_at")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
+  id          String     @id @default(uuid())
+  schoolId    String     @map("school_id")
+  routeId     String     @map("route_id")
+  busId       String     @map("bus_id")
+  driverId    String     @map("driver_id")
+  attendantId String?    @map("attendant_id")
+  serviceDate DateTime   @map("service_date") @db.Date
+  shift       Shift
+  status      TripStatus @default(SCHEDULED)
+  startedAt   DateTime?  @map("started_at")
+  endedAt     DateTime?  @map("ended_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
 
-  school           School            @relation(fields: [schoolId], references: [id])
-  route            Route             @relation(fields: [routeId], references: [id])
-  bus              Bus               @relation(fields: [busId], references: [id])
-  driver           Driver            @relation(fields: [driverId], references: [id])
-  attendant        Attendant?        @relation(fields: [attendantId], references: [id])
-  tripStudents     TripStudent[]
-  gpsPoints        GpsPoint[]
+  school       School        @relation(fields: [schoolId], references: [id])
+  route        Route         @relation(fields: [routeId], references: [id])
+  bus          Bus           @relation(fields: [busId], references: [id])
+  driver       Driver        @relation(fields: [driverId], references: [id])
+  attendant    Attendant?    @relation(fields: [attendantId], references: [id])
+  tripStudents TripStudent[]
+  gpsPoints    GpsPoint[]
 
   @@unique([routeId, serviceDate, shift])
   @@index([schoolId, serviceDate])
@@ -494,13 +531,13 @@ model Trip {
 }
 
 model TripStudent {
-  id             String            @id @default(uuid())
-  schoolId       String            @map("school_id")
-  tripId         String            @map("trip_id")
-  studentId      String            @map("student_id")
-  stopId         String?           @map("stop_id")
-  currentStatus  TripStudentStatus @default(EXPECTED) @map("current_status")
-  updatedAt      DateTime          @updatedAt @map("updated_at")
+  id            String            @id @default(uuid())
+  schoolId      String            @map("school_id")
+  tripId        String            @map("trip_id")
+  studentId     String            @map("student_id")
+  stopId        String?           @map("stop_id")
+  currentStatus TripStudentStatus @default(EXPECTED) @map("current_status")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
 
   school           School            @relation(fields: [schoolId], references: [id])
   trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
@@ -515,17 +552,17 @@ model TripStudent {
 }
 
 model AttendanceEvent {
-  id             String                @id @default(uuid())
-  schoolId       String                @map("school_id")
-  tripStudentId  String                @map("trip_student_id")
-  eventType      AttendanceEventType   @map("event_type")
-  source         AttendanceEventSource
-  recordedBy     String?               @map("recorded_by")
-  occurredAt     DateTime              @default(now()) @map("occurred_at")
-  latitude       Float?
-  longitude      Float?
-  metadata       Json?
-  createdAt      DateTime              @default(now()) @map("created_at")
+  id            String                @id @default(uuid())
+  schoolId      String                @map("school_id")
+  tripStudentId String                @map("trip_student_id")
+  eventType     AttendanceEventType   @map("event_type")
+  source        AttendanceEventSource
+  recordedBy    String?               @map("recorded_by")
+  occurredAt    DateTime              @default(now()) @map("occurred_at")
+  latitude      Float?
+  longitude     Float?
+  metadata      Json?
+  createdAt     DateTime              @default(now()) @map("created_at")
 
   school      School      @relation(fields: [schoolId], references: [id])
   tripStudent TripStudent @relation(fields: [tripStudentId], references: [id])
@@ -541,19 +578,19 @@ model AttendanceEvent {
 // ---------------------------------------------------------------------------
 
 model GpsPoint {
-  id            BigInt   @id @default(autoincrement())
-  schoolId      String   @map("school_id")
-  busId         String   @map("bus_id")
-  deviceId      String   @map("device_id")
-  tripId        String?  @map("trip_id")
-  latitude      Float
-  longitude     Float
-  speedKmh      Decimal? @map("speed_kmh") @db.Decimal(5, 2)
-  heading       Decimal? @db.Decimal(5, 2)
-  ignitionOn    Boolean? @map("ignition_on")
-  networkState  String?  @map("network_state")
-  deviceTime    DateTime @map("device_time")
-  receivedAt    DateTime @default(now()) @map("received_at")
+  id           BigInt   @id @default(autoincrement())
+  schoolId     String   @map("school_id")
+  busId        String   @map("bus_id")
+  deviceId     String   @map("device_id")
+  tripId       String?  @map("trip_id")
+  latitude     Float
+  longitude    Float
+  speedKmh     Decimal? @map("speed_kmh") @db.Decimal(5, 2)
+  heading      Decimal? @db.Decimal(5, 2)
+  ignitionOn   Boolean? @map("ignition_on")
+  networkState String?  @map("network_state")
+  deviceTime   DateTime @map("device_time")
+  receivedAt   DateTime @default(now()) @map("received_at")
 
   school School    @relation(fields: [schoolId], references: [id])
   bus    Bus       @relation(fields: [busId], references: [id])
@@ -627,21 +664,82 @@ model AuditLog {
 // ---------------------------------------------------------------------------
 
 model File {
-  id                  String    @id @default(uuid())
-  schoolId            String    @map("school_id")
-  ownerType           String    @map("owner_type")
-  ownerId             String?   @map("owner_id")
-  storageKey          String    @map("storage_key")
-  contentType         String    @map("content_type")
-  sizeBytes           BigInt?   @map("size_bytes")
-  retentionExpiresAt  DateTime? @map("retention_expires_at")
-  createdBy           String?   @map("created_by")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  deletedAt           DateTime? @map("deleted_at")
+  id                 String    @id @default(uuid())
+  schoolId           String    @map("school_id")
+  ownerType          String    @map("owner_type")
+  ownerId            String?   @map("owner_id")
+  storageKey         String    @map("storage_key")
+  contentType        String    @map("content_type")
+  sizeBytes          BigInt?   @map("size_bytes")
+  retentionExpiresAt DateTime? @map("retention_expires_at")
+  createdBy          String?   @map("created_by")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  deletedAt          DateTime? @map("deleted_at")
 
-  school   School    @relation(fields: [schoolId], references: [id])
-  creator  User?     @relation("FileCreatedBy", fields: [createdBy], references: [id])
+  school         School    @relation(fields: [schoolId], references: [id])
+  creator        User?     @relation("FileCreatedBy", fields: [createdBy], references: [id])
   studentPhotoOf Student[] @relation("StudentPhoto")
 
   @@map("files")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication / Sessions
+//
+// principalType/principalId are polymorphic (User or Parent) — same
+// established pattern as audit_logs.actor_id/files.owner_id (see this
+// schema's header comment); no Prisma relation, integrity enforced at the
+// service layer.
+//
+// IMPORTANT: looking a token up BY ITS HASH necessarily happens before the
+// caller's tenant is known (that is what the lookup is for), so it cannot go
+// through the normal RLS-scoped path — it uses PrismaService's
+// runAsPlatformAdmin() escape hatch, narrowly, on a unique-hash-only WHERE
+// clause. Every other operation on these tables (rotation, revocation,
+// listing) runs through the normal tenant-scoped path once the schoolId is
+// known. See docs/adr/0010-credential-resolution-rls-bypass.md.
+// ---------------------------------------------------------------------------
+
+model RefreshToken {
+  id                String             @id @default(uuid())
+  schoolId          String             @map("school_id")
+  principalType     AuthPrincipalType  @map("principal_type")
+  principalId       String             @map("principal_id")
+  sessionId         String             @map("session_id")
+  tokenHash         String             @unique @map("token_hash")
+  issuedAt          DateTime           @default(now()) @map("issued_at")
+  expiresAt         DateTime           @map("expires_at")
+  revokedAt         DateTime?          @map("revoked_at")
+  revokedReason     TokenRevokeReason? @map("revoked_reason")
+  replacedByTokenId String?            @unique @map("replaced_by_token_id")
+  userAgent         String?            @map("user_agent")
+  ipAddress         String?            @map("ip_address")
+  createdAt         DateTime           @default(now()) @map("created_at")
+
+  school       School        @relation(fields: [schoolId], references: [id])
+  replacedBy   RefreshToken? @relation("RefreshTokenReplacement", fields: [replacedByTokenId], references: [id])
+  replacedFrom RefreshToken? @relation("RefreshTokenReplacement")
+
+  @@index([schoolId])
+  @@index([principalType, principalId])
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id            String            @id @default(uuid())
+  schoolId      String            @map("school_id")
+  principalType AuthPrincipalType @map("principal_type")
+  principalId   String            @map("principal_id")
+  tokenHash     String            @unique @map("token_hash")
+  expiresAt     DateTime          @map("expires_at")
+  usedAt        DateTime?         @map("used_at")
+  requestedIp   String?           @map("requested_ip")
+  createdAt     DateTime          @default(now()) @map("created_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+  @@index([principalType, principalId])
+  @@map("password_reset_tokens")
 }

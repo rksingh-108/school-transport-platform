@@ -4,29 +4,83 @@ Status: Draft v1
 
 ## 1. Authentication
 
+**Implemented in Phase 1 Step 1** — `apps/api/src/auth/`. See
+[api.md](api.md#auth) for the exact endpoints and
+[ADR 0010](adr/0010-credential-resolution-rls-bypass.md) for how login/refresh/
+reset resolve a tenant before it's known.
+
 - Passwords hashed with **argon2id** (memory-hard, OWASP-recommended over bcrypt for
   new systems), never reversible, never logged.
-- Web sessions: short-lived JWT access token (15 min) + rotating refresh token
-  stored in a `httpOnly`, `Secure`, `SameSite=Lax` cookie; refresh tokens are
-  persisted (hashed) server-side so a single refresh token can be revoked
-  individually (logout-everywhere, compromised-device revocation).
-- Mobile/API clients: same access/refresh token pair, delivered in response body
-  instead of a cookie (no browser CSRF surface to protect there), stored in secure
-  device storage (Keychain/Keystore) by the client.
-- MFA-ready: `users.mfa_enabled` + encrypted TOTP secret from day one; login flow
-  has a `MFA_REQUIRED` intermediate state even before MFA enrollment is mandatory
-  for any role, so turning it on later (e.g., mandatory for `SCHOOL_ADMIN`/
-  `SUPER_ADMIN`) requires no auth-flow redesign.
-- Parent auth is a **separate login endpoint and separate token audience** from
-  staff auth (`/auth/parent/login` vs `/auth/login`) — a parent's token is never
-  structurally valid against a staff-only endpoint's guard, independent of the
-  permission check also failing. Two layers, not one.
+- Web sessions: short-lived JWT access token (15 min, configurable via
+  `ACCESS_TOKEN_TTL_SECONDS`) + rotating refresh token stored in an `httpOnly`,
+  `Secure` (production)/`SameSite=Lax` cookie scoped to `/api/v1/auth`. Refresh
+  tokens are opaque random secrets; only their SHA-256 hash is persisted
+  (`refresh_tokens.token_hash`, unique), so a single session can be revoked
+  individually. **Rotation with reuse detection**: every refresh both issues a new
+  token and revokes the old one (`revoked_reason = ROTATED`,
+  `replaced_by_token_id` set); presenting an already-revoked token for any reason
+  revokes the entire session family (`session_id`) and is logged as
+  `REFRESH_TOKEN_REUSE_DETECTED` — the standard OAuth2 rotation-reuse pattern.
+- No mobile/native client exists yet (driver/attendant/parent surfaces are all
+  the same responsive Next.js app per [architecture.md](architecture.md#5-frontend-composition)),
+  so the body-delivered-token path described in earlier drafts of this doc is not
+  built — only the cookie-based web flow. Revisit if/when a non-browser client
+  is actually added.
+- MFA-ready, not implemented: `users.mfa_enabled` + encrypted TOTP secret exist,
+  and login returns `{status:'MFA_REQUIRED'}` (issuing no tokens) when set — but
+  no TOTP enrollment/verification endpoint exists yet, so no current account can
+  reach that state through any real flow. The check itself is real and tested
+  (with a synthetic `mfaEnabled` account), not a stub.
+- Parent auth is a **separate login endpoint, separate token audience, and
+  separate signing secret** from staff auth (`/auth/parent/login` vs
+  `/auth/staff/login`, `JWT_PARENT_SECRET` vs `JWT_STAFF_SECRET`) — a parent's
+  token cannot be verified as a staff token even if `@RequireAudience` were
+  somehow skipped, because the signature itself won't validate against the other
+  secret. Three layers, not one: distinct secret, distinct `aud` claim +
+  `AudienceGuard`, and distinct login endpoints.
+- **Request-scoped principal, not just decoded claims.** `JwtAuthGuard` re-reads
+  the principal from the database (tenant-scoped, by the token's `schoolId`
+  claim) on every request rather than trusting the JWT payload for identity —
+  this is what makes a suspended/disabled account stop working within one
+  access-token lifetime (≤15 min) rather than only at its next login/refresh, and
+  it doubles as a defense-in-depth check: a token whose `schoolId` claim doesn't
+  match where its subject actually lives finds no row under that tenant's RLS
+  scope and is rejected, even though the signature itself is valid.
 - Device (GPS/camera) authentication is **not** user authentication: each device
   gets a provisioned credential (API key in MVP; mTLS client certificate once
   volume/security requirements justify it) scoped to exactly one `bus_device_id`,
-  never a user session token.
-- Rate limiting on all auth endpoints (`login`, `password/forgot`, `mfa/verify`) via
-  Redis-backed throttling, keyed by IP + identifier.
+  never a user session token. Not yet built (Phase 2).
+- Rate limiting: a stricter per-route throttle (5/min/IP; refresh at 20/min/IP) on
+  `staff/login`, `parent/login`, `refresh`, `change-password`, and both
+  `password-reset/*` endpoints, layered on top of the app-wide default
+  (100/min/IP) — see `apps/api/src/auth/auth.controller.ts`. Separately, a
+  **Redis-backed failed-login counter keyed by the raw submitted identifier**
+  (not a resolved account) locks out further attempts after
+  `FAILED_LOGIN_MAX_ATTEMPTS` (default 10) within `FAILED_LOGIN_WINDOW_MINUTES`
+  (default 15) — keying by the raw identifier, not "does this account exist,"
+  means a nonexistent identifier locks out identically to a real one, so the
+  lockout behavior itself cannot be used to enumerate accounts.
+
+### 1.1 Account States
+
+`AccountStatus` (`ACTIVE | INVITED | SUSPENDED | DISABLED`) applies to both
+`users` and `parents`. Exact semantics:
+
+| State | Can log in? | Can refresh an existing session? | Reversible? |
+|---|---|---|---|
+| `ACTIVE` | Yes | Yes | — |
+| `INVITED` | No | No | Yes, once onboarding completes (no invite-acceptance flow exists yet — this state exists so account creation isn't forced to set a password immediately) |
+| `SUSPENDED` | No | No | Yes, by an admin |
+| `DISABLED` | No | No | Not by ordinary admin action (distinguished from `SUSPENDED` for audit/reporting clarity) |
+
+Both login and refresh check `status === 'ACTIVE'` explicitly — anything else is
+rejected with the same generic response used for wrong credentials (no status
+leaked). A status change while a refresh token is still valid takes effect on
+that token's *next* use (refresh checks status fresh every time); a still-valid
+*access* token continues to work until it naturally expires (≤15 min) — see
+§1's note on request-scoped principal re-validation. Shortening the access-token
+TTL further, or adding a token blacklist, would close that residual window if a
+future security review decides ≤15 min isn't tight enough.
 
 ## 2. Authorization (RBAC + Permissions)
 
@@ -62,19 +116,35 @@ platform.schools.read, platform.schools.create, platform.impersonate_school
 
 ### 2.2 Enforcement — centralized, not scattered
 
-- A single `@RequirePermission('students.read')` decorator + `PermissionsGuard`
-  runs on every controller method. There is no code path that checks
-  `user.role === 'SCHOOL_ADMIN'` directly in a controller or service — that couples
-  business logic to a specific role and breaks the moment a school wants a custom
-  role composed differently.
-- The guard resolves the current user's permissions (via their roles) **once per
-  request**, cached in the request context, and additionally consults a
-  **resource-scoping policy function** registered per module (e.g., "is this trip
-  assigned to this driver?", "is this student linked+verified to this parent?").
-  Permission = "can this role ever do this"; policy = "can this specific principal
-  do this to this specific row." Both must pass.
-- Policies live in `apps/api/src/policies/`, one file per module, unit-tested in
-  isolation from HTTP.
+**Implemented** — `apps/api/src/auth/guards/`, `apps/api/src/auth/decorators/`.
+
+- `@RequirePermission('students.read')` + `PermissionsGuard` is the only
+  sanctioned way to gate a staff endpoint. There is no code path that checks
+  `user.role === 'SCHOOL_ADMIN'` directly in a controller or service — that
+  couples business logic to a specific role and breaks the moment a school wants
+  a custom role composed differently.
+- `PermissionsGuard`, `AudienceGuard`, `JwtAuthGuard`, and `ParentChildAccessGuard`
+  are all registered **globally** (`APP_GUARD` in `AuthModule`), not per-controller
+  `@UseGuards(...)`. Each one no-ops (`return true`) when its corresponding
+  decorator (`@RequirePermission`, `@RequireAudience`, `@Public`,
+  `@RequireVerifiedChild`) is absent from a route. This is a deliberate choice
+  over per-controller opt-in: a future module can enforce a check with the
+  decorator *alone* — forgetting an accompanying `@UseGuards()` can no longer
+  silently disable it.
+- `RbacService.getRolesAndPermissions()` resolves a staff principal's roles/
+  permissions fresh from the database on **every** call (no request-scoped
+  cache yet) — a revoked role therefore takes effect on the very next request,
+  not just after the access token expires. This is a deliberate correctness-
+  over-latency tradeoff for now; a request-scoped cache is a reasonable future
+  optimization if the extra query proves costly at scale.
+- The one resource-scoping check that exists so far — "is this parent verified
+  for this specific student" — is `ParentChildAccessGuard` +
+  `@RequireVerifiedChild('studentId')` (see §4). It is not yet applied to any
+  real endpoint (no student-facing routes exist until a later Phase 1 step) but
+  is built, unit- and e2e-tested now so those routes don't have to invent it.
+  Future analogous checks (e.g. "is this trip assigned to this driver") follow
+  the same pattern: a dedicated guard + decorator per relationship, not a
+  generic one-size-fits-all policy function.
 
 ### 2.3 Default Role → Permission Matrix (MVP scope; Phase 2/3 permissions granted
 when those modules ship)
@@ -133,7 +203,15 @@ child-privacy-sensitivity path in the product):
    namespace (`/parent/*`) that never imports camera/AI/incident services.
 2. **Relationship check**: every parent query resolves `studentId` through a
    `verified = true` row in `parent_students` scoped to the authenticated parent —
-   never a raw `studentId` lookup.
+   never a raw `studentId` lookup. **Implemented** as `ParentAccessService`
+   (`apps/api/src/auth/services/parent-access.service.ts`, `getVerifiedChildIds`/
+   `isVerifiedChild`) and `ParentChildAccessGuard` +
+   `@RequireVerifiedChild('studentId')` for future route-level use. Failure
+   returns `404`, never `403` — indistinguishable from the student not existing
+   at all, matching §3's cross-tenant 404 convention applied to the parent-child
+   boundary. The first real (if minimal) production use is `/auth/me`'s
+   `linkedChildrenCount` — a count only, never the child records themselves,
+   since no student-facing endpoints exist yet.
 3. **Field-level shaping**: parent-facing DTOs are hand-written response shapes
    (e.g., `ParentTripStatusDto`) that only ever include fields explicitly meant for
    parents — they are not the internal entity serialized with fields hidden by
@@ -181,6 +259,25 @@ Mandatory automated coverage before a module is considered done (ties to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 1 Step 1** (`apps/api/test/auth.e2e-spec.ts`, plus unit specs
+under `apps/api/src/auth/`): staff/parent login success and failure (wrong
+password, unknown identifier, suspended account — with an enumeration-safety
+equality check across those failure modes); access-token validation (missing,
+expired, forged/mismatched `schoolId` claim); `/auth/me` for both audiences;
+audience separation in both directions via a test-only guarded controller;
+staff RBAC allow/deny; parent-child allow/deny/cross-tenant-404; refresh
+rotation, reuse detection killing the whole session family, and revoked-token
+rejection; logout and logout-all; change-password (wrong current password,
+session revocation on success); password-reset request (enumeration-safety),
+confirm, single-use enforcement, and expiry; per-route rate limiting (isolated
+app instance, real Redis-backed `ThrottlerStorage` — not mocked); and a direct
+audit-log-content check that no raw password or token ever appears in
+`audit_logs.metadata`. RLS itself is additionally re-verified independently of
+the application in this phase via direct `psql` checks as the actual restricted
+`app_user` role (not the superuser) — see
+[ADR 0010](adr/0010-credential-resolution-rls-bypass.md)'s implementation-
+correction note for why that mattered here specifically.
 
 ## 7. Threats Explicitly Considered
 

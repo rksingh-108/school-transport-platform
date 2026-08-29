@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { PinoLoggerService } from './common/logger/pino-logger.service';
@@ -15,6 +16,7 @@ async function bootstrap() {
   const configService = app.get(ConfigService<Env, true>);
 
   app.use(helmet());
+  app.use(cookieParser());
   app.enableCors({ origin: configService.get('CORS_ORIGIN', { infer: true }), credentials: true });
 
   // /health and /health/ready are liveness/readiness probes for orchestrators —

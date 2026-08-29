@@ -7,19 +7,22 @@ import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
   imports: [
     AppConfigModule,
-    // Conservative global default; individual endpoints (auth, in particular —
-    // see docs/security.md#1-authentication) will tighten this further in
-    // Phase 1 via per-route @Throttle() overrides.
+    // Conservative global default; the auth module's login/refresh/reset
+    // endpoints apply a much stricter per-route @Throttle() override on top
+    // of this — see docs/security.md#1-authentication and
+    // apps/api/src/auth/auth.controller.ts.
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     DatabaseModule,
     RedisModule,
     StorageModule,
     HealthModule,
+    AuthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

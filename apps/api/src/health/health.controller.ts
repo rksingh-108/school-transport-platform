@@ -3,6 +3,7 @@ import { HealthCheck, HealthCheckService, HealthIndicatorService } from '@nestjs
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { STORAGE_PROVIDER, type StorageProvider } from '../storage/storage-provider.interface';
+import { Public } from '../common/decorators/public.decorator';
 
 // NOTE: HealthCheckService, HealthIndicatorService, PrismaService, and
 // RedisService below are deliberately VALUE imports, not `import type` —
@@ -17,6 +18,7 @@ import { STORAGE_PROVIDER, type StorageProvider } from '../storage/storage-provi
  * fixed, stable path regardless of API version. See
  * docs/api.md#system and docs/architecture.md#3-cross-cutting-concerns.
  */
+@Public()
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(

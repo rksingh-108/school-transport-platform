@@ -40,15 +40,35 @@ marked public. Full parameter/response schemas live in the generated OpenAPI doc
 this table is the contract summary for planning and review.
 
 ### Auth
-| Method | Path | Permission | Notes |
+
+Implemented in Phase 1 Step 1 — see [security.md](security.md#1-authentication),
+[ADR 0004](adr/0004-auth-strategy.md), and
+[ADR 0010](adr/0010-credential-resolution-rls-bypass.md). Endpoint paths below are
+the actual implementation, not the earlier draft (`/auth/login` →
+`/auth/staff/login`, `/auth/password/forgot` → `/auth/password-reset/request`,
+etc., for symmetry with `/auth/parent/login` and clearer naming).
+
+| Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/auth/login` | public | staff/driver/attendant login |
-| POST | `/auth/parent/login` | public | separate parent login path (phone/OTP-capable later) |
-| POST | `/auth/logout` | authenticated | |
-| POST | `/auth/refresh` | authenticated (refresh token) | |
-| POST | `/auth/mfa/verify` | authenticated (pending-MFA state) | |
-| POST | `/auth/password/forgot` | public | rate-limited |
-| POST | `/auth/password/reset` | public (token) | |
+| POST | `/auth/staff/login` | public | `{email, password}`. `200 {status:'OK', accessToken, accessTokenExpiresAt, principal}` + sets `staff_refresh_token` cookie. `200 {status:'MFA_REQUIRED'}` (no tokens issued) if `mfaEnabled` — see [ai-safety.md](ai-safety.md)-style note: no TOTP verify endpoint exists yet, this branch is unreachable by any current account. 401 generic on any failure (not found / wrong password / inactive) — identical body regardless of cause. Throttled 5/min/IP. |
+| POST | `/auth/parent/login` | public | `{phone, password}`. Same response/failure shape as staff login; sets `parent_refresh_token` cookie instead. Throttled 5/min/IP. |
+| POST | `/auth/refresh` | public* | Reads whichever refresh cookie is present. Rotates it (old token revoked, new one issued+cookied) and returns a new access token. Reused/revoked/expired token → `401`, and reuse additionally revokes the entire session family. Throttled 20/min/IP. *"Public" means no `Authorization` header is required — the refresh cookie itself is the credential. |
+| POST | `/auth/logout` | public* | Revokes the session identified by whichever refresh cookie is present (idempotent — no error if absent/already revoked) and clears it. Same "public" caveat as refresh. |
+| POST | `/auth/logout-all` | authenticated | Revokes every non-revoked session for the calling principal (all devices), clears the current cookie. |
+| GET | `/auth/me` | authenticated | Returns a `StaffMeResponse` or `ParentMeResponse` (see `packages/shared-types/src/auth.ts`) depending on the token's audience. Parent shape includes `linkedChildrenCount` only — never child identities. |
+| POST | `/auth/change-password` | authenticated | `{currentPassword, newPassword}`. Revokes **all** sessions (including the current one) on success — the client must re-login. Throttled 5/min/IP. |
+| POST | `/auth/password-reset/request` | public | `{audience:'STAFF'\|'PARENT', identifier}`. Always `200 {message}` with an identical generic message regardless of whether a match was found — see [security.md](security.md#6-password-security). Throttled 5/min/IP. |
+| POST | `/auth/password-reset/confirm` | public | `{token, newPassword}`. Single-use, time-limited token. `400` generic on invalid/used/expired — no distinction. Revokes all sessions on success. Throttled 5/min/IP. |
+
+**Audiences.** Staff and parent access tokens are signed with different secrets and
+carry different `aud` claims (`school-transport-staff` / `school-transport-parent`,
+both configurable via env) — a token for one audience is structurally rejected on
+routes gated to the other via `@RequireAudience(...)`, independent of any
+permission check. **Cookies.** The refresh token is delivered exclusively via an
+httpOnly, `SameSite=Lax` cookie scoped to `/api/v1/auth` — never in a JSON
+response body, and never readable by client-side JS. **Errors** from this module
+follow the standard shape (§1) with codes such as `UNAUTHORIZED`, `FORBIDDEN`,
+`BAD_REQUEST`.
 
 ### Schools (SUPER_ADMIN + SCHOOL_ADMIN self-service subset)
 | Method | Path | Permission |

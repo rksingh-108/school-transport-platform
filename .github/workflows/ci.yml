@@ -24,6 +24,17 @@ env:
   STORAGE_ACCESS_KEY: minioadmin
   STORAGE_SECRET_KEY: minioadmin_ci_password
   STORAGE_BUCKET: school-transport-ci
+  # Auth (docs/security.md#1-authentication) — CI-only secrets, never real.
+  JWT_STAFF_SECRET: ci_only_staff_secret_at_least_32_characters_long
+  JWT_PARENT_SECRET: ci_only_parent_secret_at_least_32_characters_long
+  JWT_ISSUER: school-transport-platform
+  JWT_STAFF_AUDIENCE: school-transport-staff
+  JWT_PARENT_AUDIENCE: school-transport-parent
+  ACCESS_TOKEN_TTL_SECONDS: '900'
+  REFRESH_TOKEN_TTL_DAYS: '30'
+  PASSWORD_RESET_TOKEN_TTL_MINUTES: '30'
+  FAILED_LOGIN_MAX_ATTEMPTS: '10'
+  FAILED_LOGIN_WINDOW_MINUTES: '15'
 
 jobs:
   build-and-test:

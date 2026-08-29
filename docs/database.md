@@ -477,12 +477,36 @@ create policy tenant_isolation on students
   using (school_id = current_setting('app.current_school_id')::uuid);
 ```
 
-The API sets `app.current_school_id` (and, for `SUPER_ADMIN` cross-tenant tooling, an
-explicit bypass role) at the start of each request's transaction. This is
-**defense-in-depth**: application-level tenant filtering (via the repository layer)
-is the primary control; RLS ensures a bug in one repository method cannot leak
-another tenant's rows. See [security.md](security.md#tenant-isolation) for the full
-threat model and why both layers are required.
+The API sets `app.current_school_id` at the start of each request's tenant-scoped
+transaction. This is **defense-in-depth**: application-level tenant filtering (via
+the repository layer) is the primary control; RLS ensures a bug in one repository
+method cannot leak another tenant's rows. See
+[security.md](security.md#tenant-isolation) for the full threat model and why both
+layers are required.
+
+**Platform-admin bypass, and which tables actually need it.** `schools`,
+`audit_logs`, `users`, `parents`, `refresh_tokens`, and `password_reset_tokens`
+carry an additional clause:
+```sql
+using (
+  school_id = current_setting('app.current_school_id', true)
+  or coalesce(current_setting('app.is_platform_admin', true), 'false') = 'true'
+)
+```
+`PrismaService.runAsPlatformAdmin()` sets `app.is_platform_admin = 'true'` for
+narrow, audited cross-tenant reads — used only where a query is inherently
+pre-tenant by nature: `SUPER_ADMIN` platform tooling on `schools`, and credential
+resolution (login-by-identifier, refresh/reset-token-by-hash) on the other four,
+per [ADR 0010](adr/0010-credential-resolution-rls-bypass.md). **Every table queried
+via `runAsPlatformAdmin` anywhere in the codebase must carry this clause** — a table
+with only the plain `current_school_id` check silently returns zero rows for a
+platform-admin-scoped query (`is_platform_admin` being set has no effect on a
+policy that never references it), which is exactly the bug documented in ADR 0010's
+follow-up: it broke every login/refresh/reset flow until the policies on `users`
+and `parents` were corrected to match. Tables *never* queried via
+`runAsPlatformAdmin` (`students`, `buses`, `trips`, etc.) correctly have only the
+plain tenant check — adding the bypass clause to a table nothing legitimately
+needs it for would be an unjustified widening of the escape hatch.
 
 ## 6. Migrations
 
