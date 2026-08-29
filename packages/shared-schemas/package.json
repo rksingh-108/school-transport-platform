@@ -1,0 +1,24 @@
+{
+  "name": "@school-transport/shared-schemas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zod validation schemas shared between apps/api (backend DTO validation) and apps/web (form validation) so the two never drift. See docs/architecture.md#3-cross-cutting-concerns.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@school-transport/config": "workspace:*",
+    "eslint": "^9.39.5",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.0"
+  }
+}

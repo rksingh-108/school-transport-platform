@@ -1,0 +1,72 @@
+{
+  "name": "@school-transport/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NestJS modular monolith — the core business API. See docs/architecture.md.",
+  "scripts": {
+    "build": "nest build",
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1121.0",
+    "@aws-sdk/s3-request-presigner": "^3.1121.0",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-express": "^11.2.3",
+    "@nestjs/swagger": "^11.4.7",
+    "@nestjs/terminus": "^11.1.1",
+    "@nestjs/throttler": "^6.5.0",
+    "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^11.2.3",
+    "@prisma/client": "^5.22.0",
+    "@school-transport/config": "workspace:*",
+    "@school-transport/shared-schemas": "workspace:*",
+    "@school-transport/shared-types": "workspace:*",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.19.43",
+    "@types/supertest": "^7.2.1",
+    "dotenv": "^17.4.2",
+    "eslint": "^9.39.5",
+    "jest": "^30.5.0",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3"
+  },
+  "jest": {
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage"
+  }
+}

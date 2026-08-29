@@ -1,0 +1,21 @@
+{
+  "name": "@school-transport/shared-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hand-written domain types shared between apps/api and apps/web. OpenAPI-generated client types will be added alongside these once the API surface stabilizes (see docs/api.md).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "@school-transport/config": "workspace:*",
+    "eslint": "^9.39.5",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.0"
+  }
+}

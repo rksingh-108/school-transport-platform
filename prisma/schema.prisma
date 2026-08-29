@@ -1,0 +1,647 @@
+// Prisma schema — source of truth for the database structure.
+// Human-readable companion: docs/database.md (keep both in sync on review).
+//
+// Prisma ORM is pinned to the 5.x line (classic "prisma-client-js" generator)
+// rather than the newly released 7.x — see docs/adr/0008-prisma-version-pin.md
+// for why: 7.x's new generator emits ESM TypeScript source with explicit `.ts`
+// extension imports and requires an explicit driver-adapter object instead of a
+// connection-string, which is incompatible with this monolith's plain
+// CommonJS/tsc NestJS build without introducing a bundler. This is a deviation
+// from no specific prior document (ADR 0003 named Prisma but not a major
+// version), recorded per the standing instruction to document any deviation.
+//
+// IMPORTANT — things Prisma cannot express that are handled outside this file:
+//   - PostgreSQL Row-Level Security policies (tenant isolation defense-in-depth)
+//     and the `app_user` role are created in a hand-written SQL migration
+//     (prisma/migrations/.../migration.sql) and documented in
+//     docs/database.md#5-row-level-security. Prisma has no schema syntax for RLS.
+//   - Email case-insensitivity: docs/database.md's raw SQL used Postgres `citext`.
+//     This schema uses plain `String` and normalizes email to lowercase at the
+//     application layer instead, to avoid depending on a Prisma preview feature
+//     for a non-essential convenience. See docs/database.md's Prisma
+//     implementation notes.
+//   - Polymorphic references (audit_logs.actor/subject, files.owner) are plain
+//     columns, not Prisma relations — Prisma has no polymorphic-association
+//     syntax. Referential integrity for these is enforced at the service layer.
+//   - Two-role connection split (migration/owner vs restricted runtime `app_user`):
+//     this schema's `url = env("DATABASE_URL")` is the privileged connection used
+//     by the Prisma CLI (migrate/seed). apps/api's PrismaService overrides the
+//     connection at runtime to the restricted `API_DATABASE_URL` via the
+//     `datasources.db.url` constructor option — see apps/api/src/database.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum SchoolStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+}
+
+enum AccountStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+  GRADUATED
+}
+
+enum BusStatus {
+  ACTIVE
+  MAINTENANCE
+  RETIRED
+}
+
+enum DeviceType {
+  GPS
+  CAMERA
+  EDGE_AI_BOX
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+  FAULTY
+}
+
+enum ActiveStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum Shift {
+  MORNING_PICKUP
+  AFTERNOON_DROP
+  CUSTOM
+}
+
+enum TripStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TripStudentStatus {
+  EXPECTED
+  BOARDING_PENDING
+  BOARDED
+  ABSENT
+  DROPPED_OFF
+  ARRIVED_AT_SCHOOL
+}
+
+enum AttendanceEventType {
+  BOARDING_CONFIRMED
+  MARKED_ABSENT
+  DROPPED_OFF
+  ARRIVED_AT_SCHOOL
+  STATUS_CORRECTED
+}
+
+enum AttendanceEventSource {
+  ATTENDANT_APP
+  RFID
+  QR
+  CV
+  SYSTEM
+}
+
+enum RecipientType {
+  USER
+  PARENT
+}
+
+enum NotificationChannel {
+  PUSH
+  SMS
+  EMAIL
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum ActorType {
+  USER
+  PARENT
+  SYSTEM
+}
+
+// ---------------------------------------------------------------------------
+// Tenant root
+// ---------------------------------------------------------------------------
+
+model School {
+  id           String       @id @default(uuid())
+  name         String
+  slug         String       @unique
+  status       SchoolStatus @default(ACTIVE)
+  address      Json?
+  contactEmail String       @map("contact_email")
+  contactPhone String?      @map("contact_phone")
+  timezone     String       @default("Asia/Kolkata")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  deletedAt    DateTime?    @map("deleted_at")
+
+  users               User[]
+  roles               Role[]
+  students            Student[]
+  parents             Parent[]
+  parentStudents      ParentStudent[]
+  buses               Bus[]
+  busDevices          BusDevice[]
+  drivers             Driver[]
+  attendants          Attendant[]
+  routes              Route[]
+  routeStops          RouteStop[]
+  trips               Trip[]
+  tripStudents        TripStudent[]
+  attendanceEvents    AttendanceEvent[]
+  gpsPoints           GpsPoint[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  files               File[]
+
+  @@map("schools")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC
+// ---------------------------------------------------------------------------
+
+model User {
+  id                  String        @id @default(uuid())
+  schoolId            String        @map("school_id")
+  email               String
+  phone               String?
+  passwordHash        String        @map("password_hash")
+  fullName            String        @map("full_name")
+  status              AccountStatus @default(ACTIVE)
+  mfaEnabled          Boolean       @default(false) @map("mfa_enabled")
+  mfaSecretEncrypted  String?       @map("mfa_secret_encrypted")
+  lastLoginAt         DateTime?     @map("last_login_at")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+  deletedAt           DateTime?     @map("deleted_at")
+
+  school              School          @relation(fields: [schoolId], references: [id])
+  userRoles           UserRole[]
+  driverProfile       Driver?
+  attendantProfile    Attendant?
+  verifiedRelationships ParentStudent[] @relation("ParentStudentVerifiedBy")
+  recordedAttendanceEvents AttendanceEvent[] @relation("AttendanceEventRecordedBy")
+  createdFiles        File[]          @relation("FileCreatedBy")
+
+  @@unique([schoolId, email])
+  @@index([schoolId])
+  @@map("users")
+}
+
+model Role {
+  id         String   @id @default(uuid())
+  schoolId   String?  @map("school_id")
+  key        String
+  name       String
+  isSystem   Boolean  @default(true) @map("is_system")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  school          School?          @relation(fields: [schoolId], references: [id])
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@unique([schoolId, key])
+  @@map("roles")
+}
+
+model Permission {
+  id          String @id @default(uuid())
+  key         String @unique
+  description String
+  category    String
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// ---------------------------------------------------------------------------
+// Students / Parents
+// ---------------------------------------------------------------------------
+
+model Student {
+  id               String        @id @default(uuid())
+  schoolId         String        @map("school_id")
+  admissionNumber  String        @map("admission_number")
+  fullName         String        @map("full_name")
+  dateOfBirth      DateTime?     @map("date_of_birth") @db.Date
+  grade            String?
+  section          String?
+  photoFileId      String?       @map("photo_file_id")
+  status           StudentStatus @default(ACTIVE)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+  deletedAt        DateTime?     @map("deleted_at")
+
+  school         School          @relation(fields: [schoolId], references: [id])
+  photo          File?           @relation("StudentPhoto", fields: [photoFileId], references: [id])
+  parentStudents ParentStudent[]
+  tripStudents   TripStudent[]
+
+  @@unique([schoolId, admissionNumber])
+  @@index([schoolId])
+  @@map("students")
+}
+
+model Parent {
+  id           String        @id @default(uuid())
+  schoolId     String        @map("school_id")
+  email        String?
+  phone        String        @map("phone")
+  passwordHash String?       @map("password_hash")
+  fullName     String        @map("full_name")
+  status       AccountStatus @default(ACTIVE)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  deletedAt    DateTime?     @map("deleted_at")
+
+  school         School          @relation(fields: [schoolId], references: [id])
+  parentStudents ParentStudent[]
+
+  @@unique([schoolId, phone])
+  @@map("parents")
+}
+
+model ParentStudent {
+  id           String    @id @default(uuid())
+  schoolId     String    @map("school_id")
+  parentId     String    @map("parent_id")
+  studentId    String    @map("student_id")
+  relationship String    @default("GUARDIAN")
+  verified     Boolean   @default(false)
+  verifiedBy   String?   @map("verified_by")
+  verifiedAt   DateTime? @map("verified_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  school  School  @relation(fields: [schoolId], references: [id])
+  parent  Parent  @relation(fields: [parentId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+  verifier User?  @relation("ParentStudentVerifiedBy", fields: [verifiedBy], references: [id])
+
+  @@unique([parentId, studentId])
+  @@index([schoolId])
+  @@index([studentId])
+  @@map("parent_students")
+}
+
+// ---------------------------------------------------------------------------
+// Fleet
+// ---------------------------------------------------------------------------
+
+model Bus {
+  id                 String    @id @default(uuid())
+  schoolId           String    @map("school_id")
+  registrationNumber String    @map("registration_number")
+  capacity           Int
+  make               String?
+  model              String?
+  status             BusStatus @default(ACTIVE)
+  permitExpiry       DateTime? @map("permit_expiry") @db.Date
+  insuranceExpiry    DateTime? @map("insurance_expiry") @db.Date
+  fitnessExpiry      DateTime? @map("fitness_expiry") @db.Date
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  deletedAt          DateTime? @map("deleted_at")
+
+  school     School      @relation(fields: [schoolId], references: [id])
+  devices    BusDevice[]
+  routes     Route[]
+  trips      Trip[]
+  gpsPoints  GpsPoint[]
+
+  @@unique([schoolId, registrationNumber])
+  @@map("buses")
+}
+
+model BusDevice {
+  id                String       @id @default(uuid())
+  schoolId          String       @map("school_id")
+  busId             String       @map("bus_id")
+  deviceType        DeviceType   @map("device_type")
+  externalDeviceId  String       @map("external_device_id")
+  status            DeviceStatus @default(ACTIVE)
+  lastSeenAt        DateTime?    @map("last_seen_at")
+  lastHealth        Json?        @map("last_health")
+  installedAt       DateTime?    @map("installed_at")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  school    School     @relation(fields: [schoolId], references: [id])
+  bus       Bus        @relation(fields: [busId], references: [id])
+  gpsPoints GpsPoint[]
+
+  @@unique([deviceType, externalDeviceId])
+  @@index([busId])
+  @@map("bus_devices")
+}
+
+model Driver {
+  id             String       @id @default(uuid())
+  schoolId       String       @map("school_id")
+  userId         String       @unique @map("user_id")
+  licenseNumber  String       @map("license_number")
+  licenseExpiry  DateTime?    @map("license_expiry") @db.Date
+  status         ActiveStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  trips  Trip[]
+
+  @@map("drivers")
+}
+
+model Attendant {
+  id        String       @id @default(uuid())
+  schoolId  String       @map("school_id")
+  userId    String       @unique @map("user_id")
+  status    ActiveStatus @default(ACTIVE)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+  deletedAt DateTime?    @map("deleted_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  trips  Trip[]
+
+  @@map("attendants")
+}
+
+// ---------------------------------------------------------------------------
+// Routes / Stops
+// ---------------------------------------------------------------------------
+
+model Route {
+  id            String       @id @default(uuid())
+  schoolId      String       @map("school_id")
+  name          String
+  shift         Shift
+  status        ActiveStatus @default(ACTIVE)
+  defaultBusId  String?      @map("default_bus_id")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+  deletedAt     DateTime?    @map("deleted_at")
+
+  school     School      @relation(fields: [schoolId], references: [id])
+  defaultBus Bus?        @relation(fields: [defaultBusId], references: [id])
+  stops      RouteStop[]
+  trips      Trip[]
+
+  @@map("routes")
+}
+
+model RouteStop {
+  id                     String @id @default(uuid())
+  schoolId               String @map("school_id")
+  routeId                String @map("route_id")
+  sequenceNo             Int    @map("sequence_no")
+  name                   String
+  latitude               Float
+  longitude              Float
+  expectedOffsetMinutes  Int    @map("expected_offset_minutes")
+  radiusMeters           Int    @default(150) @map("radius_meters")
+
+  school       School        @relation(fields: [schoolId], references: [id])
+  route        Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  tripStudents TripStudent[]
+
+  @@unique([routeId, sequenceNo])
+  @@map("route_stops")
+}
+
+// ---------------------------------------------------------------------------
+// Trips / Attendance
+// ---------------------------------------------------------------------------
+
+model Trip {
+  id           String     @id @default(uuid())
+  schoolId     String     @map("school_id")
+  routeId      String     @map("route_id")
+  busId        String     @map("bus_id")
+  driverId     String     @map("driver_id")
+  attendantId  String?    @map("attendant_id")
+  serviceDate  DateTime   @map("service_date") @db.Date
+  shift        Shift
+  status       TripStatus @default(SCHEDULED)
+  startedAt    DateTime?  @map("started_at")
+  endedAt      DateTime?  @map("ended_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  school           School            @relation(fields: [schoolId], references: [id])
+  route            Route             @relation(fields: [routeId], references: [id])
+  bus              Bus               @relation(fields: [busId], references: [id])
+  driver           Driver            @relation(fields: [driverId], references: [id])
+  attendant        Attendant?        @relation(fields: [attendantId], references: [id])
+  tripStudents     TripStudent[]
+  gpsPoints        GpsPoint[]
+
+  @@unique([routeId, serviceDate, shift])
+  @@index([schoolId, serviceDate])
+  @@index([busId, serviceDate])
+  @@map("trips")
+}
+
+model TripStudent {
+  id             String            @id @default(uuid())
+  schoolId       String            @map("school_id")
+  tripId         String            @map("trip_id")
+  studentId      String            @map("student_id")
+  stopId         String?           @map("stop_id")
+  currentStatus  TripStudentStatus @default(EXPECTED) @map("current_status")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  school           School            @relation(fields: [schoolId], references: [id])
+  trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  student          Student           @relation(fields: [studentId], references: [id])
+  stop             RouteStop?        @relation(fields: [stopId], references: [id])
+  attendanceEvents AttendanceEvent[]
+
+  @@unique([tripId, studentId])
+  @@index([schoolId])
+  @@index([studentId])
+  @@map("trip_students")
+}
+
+model AttendanceEvent {
+  id             String                @id @default(uuid())
+  schoolId       String                @map("school_id")
+  tripStudentId  String                @map("trip_student_id")
+  eventType      AttendanceEventType   @map("event_type")
+  source         AttendanceEventSource
+  recordedBy     String?               @map("recorded_by")
+  occurredAt     DateTime              @default(now()) @map("occurred_at")
+  latitude       Float?
+  longitude      Float?
+  metadata       Json?
+  createdAt      DateTime              @default(now()) @map("created_at")
+
+  school      School      @relation(fields: [schoolId], references: [id])
+  tripStudent TripStudent @relation(fields: [tripStudentId], references: [id])
+  recorder    User?       @relation("AttendanceEventRecordedBy", fields: [recordedBy], references: [id])
+
+  @@index([tripStudentId, occurredAt])
+  @@index([schoolId])
+  @@map("attendance_events")
+}
+
+// ---------------------------------------------------------------------------
+// GPS / Telemetry
+// ---------------------------------------------------------------------------
+
+model GpsPoint {
+  id            BigInt   @id @default(autoincrement())
+  schoolId      String   @map("school_id")
+  busId         String   @map("bus_id")
+  deviceId      String   @map("device_id")
+  tripId        String?  @map("trip_id")
+  latitude      Float
+  longitude     Float
+  speedKmh      Decimal? @map("speed_kmh") @db.Decimal(5, 2)
+  heading       Decimal? @db.Decimal(5, 2)
+  ignitionOn    Boolean? @map("ignition_on")
+  networkState  String?  @map("network_state")
+  deviceTime    DateTime @map("device_time")
+  receivedAt    DateTime @default(now()) @map("received_at")
+
+  school School    @relation(fields: [schoolId], references: [id])
+  bus    Bus       @relation(fields: [busId], references: [id])
+  device BusDevice @relation(fields: [deviceId], references: [id])
+  trip   Trip?     @relation(fields: [tripId], references: [id])
+
+  @@index([busId, deviceTime(sort: Desc)])
+  @@index([tripId])
+  @@map("gps_points")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id            String              @id @default(uuid())
+  schoolId      String              @map("school_id")
+  recipientType RecipientType       @map("recipient_type")
+  recipientId   String              @map("recipient_id")
+  eventType     String              @map("event_type")
+  channel       NotificationChannel
+  payload       Json
+  status        NotificationStatus  @default(PENDING)
+  sentAt        DateTime?           @map("sent_at")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId, recipientType, recipientId])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id        String  @id @default(uuid())
+  parentId  String  @map("parent_id")
+  eventType String  @map("event_type")
+  channel   String
+  enabled   Boolean @default(true)
+
+  @@unique([parentId, eventType, channel])
+  @@map("notification_preferences")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  schoolId    String?   @map("school_id")
+  actorType   ActorType @map("actor_type")
+  actorId     String?   @map("actor_id")
+  action      String
+  subjectType String?   @map("subject_type")
+  subjectId   String?   @map("subject_id")
+  requestId   String?   @map("request_id")
+  ipAddress   String?   @map("ip_address")
+  metadata    Json?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  school School? @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId, createdAt(sort: Desc)])
+  @@index([subjectType, subjectId])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+model File {
+  id                  String    @id @default(uuid())
+  schoolId            String    @map("school_id")
+  ownerType           String    @map("owner_type")
+  ownerId             String?   @map("owner_id")
+  storageKey          String    @map("storage_key")
+  contentType         String    @map("content_type")
+  sizeBytes           BigInt?   @map("size_bytes")
+  retentionExpiresAt  DateTime? @map("retention_expires_at")
+  createdBy           String?   @map("created_by")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  deletedAt           DateTime? @map("deleted_at")
+
+  school   School    @relation(fields: [schoolId], references: [id])
+  creator  User?     @relation("FileCreatedBy", fields: [createdBy], references: [id])
+  studentPhotoOf Student[] @relation("StudentPhoto")
+
+  @@map("files")
+}

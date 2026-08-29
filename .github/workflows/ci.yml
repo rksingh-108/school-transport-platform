@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  NODE_ENV: test
+  # Privileged connection (Prisma CLI: migrate/seed) — the CI runner's own
+  # postgres service, not exposed to the app at runtime.
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_transport?schema=public
+  # Restricted RLS-subject connection the API actually runs with — see
+  # docs/database.md#5-row-level-security.
+  API_DATABASE_URL: postgresql://app_user:app_user_ci_password@localhost:5432/school_transport?schema=public
+  # CI's redis service runs without auth (GitHub Actions service containers
+  # can't pass a custom `--requirepass` command) — the app's REDIS_URL just
+  # omits credentials to match. Local dev and production both require a
+  # password (see .env.example / infra/docker-compose.yml).
+  REDIS_URL: redis://localhost:6379
+  STORAGE_ENDPOINT: localhost
+  STORAGE_PORT: 9000
+  STORAGE_USE_SSL: 'false'
+  STORAGE_ACCESS_KEY: minioadmin
+  STORAGE_SECRET_KEY: minioadmin_ci_password
+  STORAGE_BUCKET: school-transport-ci
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: school_transport
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d school_transport"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        # Service containers can't take a custom `command`, so the password
+        # is set via `requirepass` through the REDIS_ARGS-less config file
+        # approach isn't available either — use the default (no-auth) service
+        # for CI and point REDIS_URL at it without credentials instead.
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin_ci_password
+          MINIO_DEFAULT_BUCKETS: school-transport-ci
+        ports:
+          - 9000:9000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create restricted app_user database role
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d school_transport -c \
+            "CREATE ROLE app_user WITH LOGIN PASSWORD 'app_user_ci_password';"
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run database migrations
+        run: pnpm db:migrate:deploy
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Integration / e2e tests
+        run: pnpm --filter @school-transport/api run test:e2e
+
+      - name: Dependency audit (non-blocking for now — see docs/roadmap.md)
+        run: pnpm audit --audit-level=high
+        continue-on-error: true
