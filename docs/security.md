@@ -180,13 +180,23 @@ when those modules ship)
 | trips.manage | – | ✓ | ✓ | ✓ | read | own trip start/end | own trip read | – | – |
 | attendance.manage | – | read | read | ✓ | read | – | own trip only | – | – |
 | gps.read | – | ✓ | ✓ | ✓ | ✓ | own bus only | own bus only | ✓ | own child's bus only, via dedicated endpoint |
-| camera.read/manage | – | – | ✓ | ✓ | – | – | – | ✓ | never |
+| camera.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
 | ai_events.review | – | – | ✓ | – | read | – | – | ✓ | never |
 | incidents.* | – | ✓ | ✓ | – | ✓ | – | – | ✓ | never |
 | emergency.create | – | – | – | – | – | ✓ | ✓ | – | – |
 | emergency.read | – | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | never |
 | reports.read | – | ✓ | ✓ | ✓ | ✓ | – | – | – | never |
 | audit_logs.read | platform | ✓ | – | – | ✓ | – | – | – | never |
+
+`camera.read`/`camera.manage` for `SCHOOL_ADMIN` and `camera.read` for
+`PRINCIPAL` were added in Phase 2 Step 11 — these permission keys existed in
+seed data since before any camera module was built (see database.md's
+"Phase 2/3 permissions... included here even though those modules are not
+implemented yet" note), but had never actually been granted to either role,
+the same class of gap previously found and fixed for `TRANSPORT_MANAGER`
+(`buses.read`, Step 3) and `TRANSPORT_ADMIN` (`notifications.read`,
+Step 9). `DRIVER`/`BUS_ATTENDANT` remain deliberately ungranted — operating
+a bus is not, by itself, a reason to see its camera inventory.
 
 "Never" entries above are not merely unassigned permissions — the parent namespace's
 controllers (`/parent/*`) do not accept a permission grant for camera/ai/incident
@@ -298,6 +308,28 @@ request, so `externalDeviceId` being non-secret no longer implies anything
 about impersonation risk. See
 [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
 
+### 5.1a Camera Device Security (Phase 2 Step 11)
+
+A camera's device identity/credential reuses `BusDevice` exactly as GPS
+does (`deviceType: 'CAMERA_CONTROLLER'`) — same `credentialHash` column,
+same `TokenService` generate/hash mechanics, same "raw token shown exactly
+once, never retrievable again" rule, same one-way rotation. It is a
+**separate** guard/resolver from GPS's (`CameraDeviceAuthGuard` /
+`CamerasService.resolveDeviceByCredential`, filtered to
+`deviceType: 'CAMERA_CONTROLLER'`) rather than a shared one — a GPS
+tracker's credential must never authenticate a camera heartbeat, or vice
+versa, and threading a `deviceType` parameter through one shared guard was
+judged more coupling than the ~10 duplicated lines avoid. Archiving a
+camera (`POST /cameras/:id/archive`) sets the underlying device to
+`INACTIVE` in the same transaction; since credential resolution only ever
+matches `ACTIVE` devices, a retired camera's credential silently stops
+authenticating with no separate revocation step. The heartbeat endpoint
+(`POST /camera-devices/heartbeat`) carries no client-asserted "online"
+status and no `schoolId`/`busId`/`cameraId` field — identity is resolved
+entirely from the credential, and arrival of the authenticated request
+(recorded as `lastSeenAt`) is the only signal a device is live. See
+[ADR 0018](adr/0018-camera-device-management-foundation.md).
+
 ### 5.2 Device / Fleet Authorization
 
 Bus, driver, attendant, and device management share the existing
@@ -313,6 +345,20 @@ the data model. `TRANSPORT_MANAGER` was given read-only fleet visibility
 pre-existing gap found while reviewing the seeded matrix before adding
 anything new (a manager who schedules trips/attendance needs to see the
 fleet, but has no business editing it).
+
+**Cameras are the one exception to this pattern.** Even though a `Camera`
+row is, structurally, a `BusDevice` extension exactly like a GPS tracker,
+its endpoints are deliberately gated by `camera.read`/`camera.manage` —
+pre-existing permission keys reserved for this module since before it was
+built (§2.3) — never by `buses.read`/`buses.manage`. Camera access is
+intentionally a narrower, separately-grantable capability than generic
+fleet-device visibility: `SECURITY` has `camera.read` with no
+`buses.read`/`buses.manage` at all, and `DRIVER`/`BUS_ATTENDANT` have
+neither `camera.read` nor `camera.manage` despite already having
+`gps.read` (§2.3's note on why "operates the bus" isn't a reason to see its
+cameras). Reusing `buses.*` here would have made every `buses.read` grant
+silently double as camera visibility, which is exactly the unreviewed
+widening this project's RBAC changes are supposed to avoid.
 
 ### 5.3 Route / Stop Authorization
 
@@ -502,6 +548,23 @@ relationship-based, staff access is RBAC-based.
   admin's, and there is no endpoint that lists another user's
   notifications.
 
+### 5.9 Camera Authorization (Phase 2 Step 11)
+
+`CamerasController` is staff-only (`@RequireAudience('STAFF')`) and gated
+entirely by `camera.read`/`camera.manage` (§5.2) — there is no parent
+audience on this controller, and no route on it accepts an audience other
+than `STAFF` at all. Ownership checks mirror `BusDevicesController`
+exactly: every bus-scoped operation first confirms the bus belongs to the
+caller's own tenant (`assertBusInTenant`) before touching anything, and
+every camera lookup is tenant-scoped via `runInTenantContext`, so a
+cross-tenant camera id is `404`, never `403` (existence is not revealed).
+Reassigning a camera to a different bus (`PATCH .../busId`) re-verifies the
+*target* bus against the same tenant check — a School A admin cannot
+attach their own camera to a School B bus, or vice versa, by supplying a
+foreign `busId`. See §6 for the specific IDOR/RBAC test scenarios and
+[ADR 0018](adr/0018-camera-device-management-foundation.md) for why no
+parent-facing camera capability exists anywhere in this codebase.
+
 **Recipient resolution never trusts client input.** Every notification is
 created by `NotificationsService` from a `DomainEvent` payload that
 originates entirely server-side (the authenticated principal who triggered
@@ -524,13 +587,40 @@ Mandatory automated coverage before a module is considered done (ties to
 - E2E/API tests specifically for:
   - Cross-tenant access → 404, for every tenant-scoped resource type.
   - Parent can read own child, cannot read sibling-of-a-different-parent, cannot
-    read camera/AI/incident routes (route-level 404, not just 403).
+    read camera/AI/incident routes — no such route exists in the parent
+    namespace at all, and a parent JWT presented to the staff-audience
+    camera routes is rejected by `AudienceGuard` (403), same as every other
+    staff-only controller (verified for cameras in Phase 2 Step 11 —
+    `apps/api/test/cameras.e2e-spec.ts`).
   - Driver can only start/end their own assigned trip.
   - Attendant can only mark attendance on their own assigned trip.
   - `SECURITY` role cannot read student academic/contact fields not relevant to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 2 Step 11** (`apps/api/test/cameras.e2e-spec.ts` — no
+separate unit specs were added for the camera module itself; the
+guard/service logic is thin enough that e2e coverage was judged
+sufficient, the same call already made for GPS's device-auth guard in
+Phase 1 Step 7): full CRUD/lifecycle
+(create, duplicate `cameraCode`/serial-number rejection as 400 not 500,
+update, `CUSTOM` position requiring a label, reassignment to a different
+bus, archive-is-terminal, `PATCH status: 'RETIRED'` rejected); RBAC
+(`SCHOOL_ADMIN`/`TRANSPORT_ADMIN` allowed, `DRIVER`/`BUS_ATTENDANT` denied
+despite holding `gps.read`, parent denied at every route including
+`/stream`); cross-tenant IDOR (404 for cross-school read/update/archive/
+credential/stream, cross-school bus association, cross-school camera list);
+device authentication (no heartbeat without an issued credential, valid
+credential accepted, invalid/garbage credential rejected, a GPS tracker's
+own credential specifically rejected for a camera heartbeat, rotation
+invalidates the old credential immediately, an archived camera's credential
+stops working and cannot be reissued, the stored hash is a SHA-256 digest
+never the raw token); stream availability always `NOT_CONFIGURED` and never
+a real URL/token/credential; audit rows for create/reassign/archive but
+never one per heartbeat (five heartbeats sent, verified not five audit
+rows); and a direct-`psql`-as-`app_user` RLS re-verification (no tenant
+context → zero rows, School A/B mutual exclusion).
 
 **Covered as of Phase 1 Step 1** (`apps/api/test/auth.e2e-spec.ts`, plus unit specs
 under `apps/api/src/auth/`): staff/parent login success and failure (wrong
@@ -578,10 +668,19 @@ re-verification described above.
 - Parent self-linking to an arbitrary child → mitigated by the `verified` gate in
   `parent_students`.
 - Device credential compromise → scoped to a single `bus_device_id`; revocable
-  independently; cannot authenticate as a user.
+  independently; cannot authenticate as a user. Applies identically to camera
+  controller credentials (Phase 2 Step 11) — a compromised camera credential
+  can only send heartbeats (`lastSeenAt`/`firmwareVersion`/a small bounded
+  health blob), never read or write anything else, and never grants stream
+  access (no real stream provider exists this phase to compromise).
 - Insider over-access (staff browsing beyond their remit) → permission matrix +
   audit logging of all read access to `students`, `ai_events`, `incidents`, and
   `files` of type `INCIDENT_CLIP`.
+- A frontend claiming a camera stream is "live" when none exists → structurally
+  prevented, not just a UI convention: `CameraStreamAvailabilityDto.status` has
+  no value meaning "a real, live feed is available" (only `NOT_CONFIGURED` and
+  the explicitly-dev/test-only `SIMULATED`) — there is no real stream provider
+  in this phase for a compromised or buggy frontend to misrepresent.
 
 ## 8. Rate Limiting
 
@@ -614,6 +713,11 @@ from `auth.controller.ts` before it existed). Two layers:
      device identity — a real limitation if multiple devices share one
      NAT/IP, accepted for this phase and noted for revisit with real
      fleet traffic data.
+   - Camera heartbeat (`POST /camera-devices/heartbeat`, Phase 2 Step 11):
+     configurable via `CAMERA_HEARTBEAT_RATE_LIMIT_PER_MINUTE` (default
+     20/min) — much lower than GPS's, since a realistic camera-controller
+     heartbeat cadence is on the order of a minute, not a few seconds.
+     Same IP-keyed limitation as GPS ingestion above.
 
 Device credential rotation, notification read/mark-read, and other
 staff-authenticated management actions rely on the global default only —

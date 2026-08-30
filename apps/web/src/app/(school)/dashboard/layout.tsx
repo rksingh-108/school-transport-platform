@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/staff', label: 'Staff', permission: 'users.read' },
   { href: '/dashboard/parents', label: 'Parents', permission: 'parents.read' },
   { href: '/dashboard/buses', label: 'Buses', permission: 'buses.read' },
+  { href: '/dashboard/cameras', label: 'Cameras', permission: 'camera.read' },
   { href: '/dashboard/drivers', label: 'Drivers', permission: 'drivers.read' },
   { href: '/dashboard/attendants', label: 'Attendants', permission: 'attendants.read' },
   { href: '/dashboard/routes', label: 'Routes', permission: 'routes.read' },

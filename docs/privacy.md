@@ -40,12 +40,33 @@ requirements this document does not attempt to interpret authoritatively.
 | Trip manifest (which student is planned on which trip, pickup/dropoff stop) | School staff (Phase 1 Step 5) | School staff per RBAC (`trips.read`/`trips.manage`); parent sees a simplified trip status for their own child only, via a dedicated parent-safe view (Phase 1 Step 8) — never this staff management API, never a raw manifest/`TripStudent` row | Soft-removed only, never hard-deleted (kept for the trip's own historical record); no separate retention job yet, tracked in [roadmap.md](roadmap.md) |
 | Attendance/boarding events | Attendant app, device sources | School staff per RBAC; parent sees own child's events | Configurable per school (default 1 year), see §4 |
 | GPS points | Bus device | School staff (`gps.read`); parent sees only current/derived location for own child's active trip, never raw historical trails | Raw points: short window (default 90 days) then aggregated/discarded; live state not retained beyond trip completion in derived form |
-| Camera footage/clips (Phase 2) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
+| Camera inventory & metadata (Phase 2 Step 11) | School staff (registration) | `camera.read`/`camera.manage` roles only; **never parents** | Kept for the fleet asset's lifetime, same as `buses`/`bus_devices` — not footage, see below |
+| Camera footage/clips/streaming (Phase 2, not yet built) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
 | AI safety events (Phase 3) | AI service | `ai_events.read/review` roles only | Tied to incident retention if escalated; otherwise short-lived |
 | Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
+
+**Implementation status (Phase 2 Step 11):** camera *inventory and device
+management* is now real — a camera's name/position/status/manufacturer/
+model/serial number/firmware version/connectivity, and its heartbeat
+credential — is genuinely stored and staff-manageable, split into the new
+"Camera inventory & metadata" row above (distinct from the pre-existing
+"Camera footage/clips/streaming" row, which remains entirely unbuilt: no
+footage is ever captured, stored, or retrievable in this phase). No parent
+capability exists on this data at all — not a permission gap to be widened
+later, but a hard product requirement (there is no parent-audience route,
+no camera field on any parent DTO, and no camera event on the parent
+realtime channel — see [ADR 0018](adr/0018-camera-device-management-foundation.md)).
+No recording, snapshot, AI processing, or stream-viewing capability exists
+either; `GET /cameras/:id/stream` always reports the feed as not
+configured (or, only in a non-production dev/test configuration, an
+explicitly-labeled simulated placeholder), never a real playable stream.
+Camera device-heartbeat diagnostic data (`BusDevice.lastHealth`) is a small
+bounded blob the device itself reports (e.g. temperature, disk usage) —
+never footage, never an image, never anything derived from what the camera
+actually sees.
 
 **Implementation status (Phase 1 Step 9):** notification content is
 deliberately minimal — pre-rendered plain-language `title`/`body` text
@@ -128,6 +149,12 @@ UI button anywhere in the system. The following are **structurally unreachable**
 from any parent-authenticated session, not merely unlinked in the parent UI:
 
 - Camera feeds or recordings, in any resolution or delayed form.
+- The camera inventory itself (Phase 2 Step 11) — a camera's existence,
+  name, position, status, connectivity/health, manufacturer/model, serial
+  number, or credential state. There is no parent-audience camera route,
+  no camera field on any parent DTO, and no camera event on the parent
+  realtime channel — not an oversight to close later, a hard product
+  requirement (see [ADR 0018](adr/0018-camera-device-management-foundation.md)).
 - AI-generated events or confidence scores.
 - Incident records or investigation notes.
 - Any other student's data, including siblings' classmates on the same bus.

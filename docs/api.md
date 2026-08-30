@@ -286,6 +286,33 @@ a request for any other bus in the same school is `403`; a bus in another
 school is `404`. Device credential authentication and its cross-tenant
 guarantees are covered in [security.md §5.1](security.md).
 
+### Cameras (Phase 2 Step 11)
+
+Implemented — `apps/api/src/cameras/`. Camera inventory, bus association,
+lifecycle, and device authentication only — no streaming, recording, AI, or
+parent access. See
+[ADR 0018](adr/0018-camera-device-management-foundation.md). Gated by
+`camera.read`/`camera.manage`, never `buses.read`/`buses.manage` — a
+deliberately narrower-access domain than generic fleet devices (`DRIVER`/
+`BUS_ATTENDANT` have neither permission, unlike `buses.read`).
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/buses/:busId/cameras` | `camera.read` | Not paginated — a bus has few cameras. 404 if `busId` isn't the caller's own bus. |
+| POST | `/buses/:busId/cameras` | `camera.manage` | `{cameraCode, name, position, customPositionLabel?, manufacturer?, model?, serialNumber, firmwareVersion?, streamType?}`. `customPositionLabel` required only when `position: 'CUSTOM'`. Creates the camera's underlying `bus_devices` row (`CAMERA_CONTROLLER`) in the same transaction — no separate device-registration call needed. |
+| GET | `/cameras` | `camera.read` | School-wide, cursor-paginated; `?busId`, `?status`, `?search`. |
+| GET | `/cameras/:id` | `camera.read` | |
+| PATCH | `/cameras/:id` | `camera.manage` | `{cameraCode?, name?, position?, customPositionLabel?, manufacturer?, model?, firmwareVersion?, streamType?, status?, busId?}` — `status` restricted to `ACTIVE`/`INACTIVE`/`FAULT`; `RETIRED` is rejected (400), same archive-only pattern as buses/devices. `busId` reassigns to a different bus in the same tenant (404 if not); audited separately as a reassignment. Rejected (400) once the camera is `RETIRED`. |
+| POST | `/cameras/:id/archive` | `camera.manage` | Terminal — sets `status: 'RETIRED'` and deactivates the underlying device in the same transaction, so its credential stops authenticating immediately. 400 if already retired. |
+| POST | `/cameras/:id/credential` | `camera.manage` | Issues/rotates the camera's device bearer credential — delegates to the same mechanism as `POST /devices/:id/credential`. Returns `{deviceId, token, issuedAt}`; `token` shown exactly once. 400 for a retired camera. |
+| GET | `/cameras/:id/stream` | `camera.read` | Returns `{status: 'NOT_CONFIGURED'\|'SIMULATED', message}` — never a real playback URL, vendor token, or stream credential. `SIMULATED` only appears if `CAMERA_STREAM_PROVIDER=MOCK` is explicitly set (rejected in production — see security.md's configuration-hardening note). |
+| POST | `/camera-devices/heartbeat` | Device bearer credential — **not** a staff/parent session | No `schoolId`/`busId`/`cameraId` field exists — identity resolved entirely from the credential, same IDOR-by-construction pattern as GPS ingestion. Optional `{firmwareVersion?, health?}`; carries no client-asserted "online" status — arrival of the authenticated request, recorded as `lastSeenAt`, is the only signal. Not rate-limited as tightly as GPS ingestion (`CAMERA_HEARTBEAT_RATE_LIMIT_PER_MINUTE`, default 20/min) — a realistic heartbeat cadence is far lower. |
+
+There is no parent-facing camera endpoint anywhere in this codebase, and
+none is planned for this phase — see
+[security.md §4](security.md#4-parent-data-access-boundary) and
+[privacy.md](privacy.md).
+
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
 `ParentSelfController`/`ParentTransportController` (`@RequireAudience('PARENT')`,
@@ -355,7 +382,10 @@ their own alerts, never another admin's.
 
 ## 3. Phase 2/3 Endpoint Groups (outlined, not built yet)
 
-- `/cameras`, `/cameras/:id/health` — `camera.read` / `camera.manage`
+`/cameras` itself is now built (§2, Phase 2 Step 11) — streaming/recording
+playback, camera-triggered events, and everything below remain outlined
+only:
+
 - `/ai-events`, `/ai-events/:id/review` — `ai_events.read` / `ai_events.review`
 - `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve`
 - `/geofences`, `/speed-events` — Phase 2

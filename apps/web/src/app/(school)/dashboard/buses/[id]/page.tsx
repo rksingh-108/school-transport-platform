@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { BusDto, BusDeviceDto, BusLocationDto } from '@school-transport/shared-types';
+import type { BusDto, BusDeviceDto, BusLocationDto, CameraDto } from '@school-transport/shared-types';
 import {
   archiveBus,
   deactivateDevice,
@@ -14,6 +14,15 @@ import {
   updateDevice,
 } from '@/lib/api/buses';
 import { getBusLocation } from '@/lib/api/gps';
+import {
+  CAMERA_POSITIONS,
+  archiveCamera,
+  createCamera,
+  getCameraStream,
+  listCamerasForBus,
+  rotateCameraCredential,
+  updateCamera,
+} from '@/lib/api/cameras';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
@@ -32,15 +41,17 @@ function errorMessage(error: unknown, notFoundMessage: string): string {
 
 async function loadBusAndDevices(id: string) {
   // A driver/attendant viewing their own bus has `gps.read` but not
-  // `buses.read`/`buses.manage` — the bus and device lookups above already
-  // 403 for them (this page is only linked from buses.read-gated screens in
-  // practice), so location alone must not fail the whole page load.
-  const [bus, devices, location] = await Promise.all([
+  // `buses.read`/`buses.manage`/`camera.read` — the bus and device lookups
+  // above already 403 for them (this page is only linked from
+  // buses.read-gated screens in practice), so location/cameras alone must
+  // not fail the whole page load.
+  const [bus, devices, location, cameras] = await Promise.all([
     getBus(id),
     listBusDevices(id),
     getBusLocation(id).catch(() => null),
+    listCamerasForBus(id).catch(() => null),
   ]);
-  return { bus, devices, location };
+  return { bus, devices, location, cameras };
 }
 
 export default function BusDetailPage() {
@@ -50,21 +61,33 @@ export default function BusDetailPage() {
   if (loading) return <LoadingState />;
   if (error || !data) return <ErrorState message={errorMessage(error, 'Bus not found.')} onRetry={reload} />;
 
-  return <BusEditForm key={data.bus.id} bus={data.bus} initialDevices={data.devices} location={data.location} />;
+  return (
+    <BusEditForm
+      key={data.bus.id}
+      bus={data.bus}
+      initialDevices={data.devices}
+      location={data.location}
+      initialCameras={data.cameras}
+    />
+  );
 }
 
 function BusEditForm({
   bus,
   initialDevices,
   location,
+  initialCameras,
 }: {
   bus: BusDto;
   initialDevices: BusDeviceDto[];
   location: BusLocationDto | null;
+  initialCameras: CameraDto[] | null;
 }) {
   const router = useRouter();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('buses.manage');
+  const canManageCameras = principal?.type === 'STAFF' && principal.permissions.includes('camera.manage');
+  const canReadCameras = canManageCameras || (principal?.type === 'STAFF' && principal.permissions.includes('camera.read'));
 
   const [current, setCurrent] = useState(bus);
   const [fleetNumber, setFleetNumber] = useState(bus.fleetNumber ?? '');
@@ -88,6 +111,19 @@ function BusEditForm({
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
   const [issuedCredential, setIssuedCredential] = useState<{ deviceId: string; token: string } | null>(null);
+
+  const [cameras, setCameras] = useState<CameraDto[]>(initialCameras ?? []);
+  const [cameraCode, setCameraCode] = useState('');
+  const [cameraName, setCameraName] = useState('');
+  const [cameraPosition, setCameraPosition] = useState<(typeof CAMERA_POSITIONS)[number]>('FRONT');
+  const [cameraSerialNumber, setCameraSerialNumber] = useState('');
+  const [creatingCamera, setCreatingCamera] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [busyCameraId, setBusyCameraId] = useState<string | null>(null);
+  const [issuedCameraCredential, setIssuedCameraCredential] = useState<{ cameraId: string; token: string } | null>(null);
+  const [streamMessage, setStreamMessage] = useState<{ cameraId: string; message: string } | null>(null);
+  const [confirmArchiveCamera, setConfirmArchiveCamera] = useState<CameraDto | null>(null);
+  const [archivingCamera, setArchivingCamera] = useState(false);
 
   async function onSave() {
     setSaveError(null);
@@ -178,6 +214,83 @@ function BusEditForm({
       setDeviceError(err instanceof ApiError ? err.message : 'Unable to issue a credential.');
     } finally {
       setBusyDeviceId(null);
+    }
+  }
+
+  async function onCreateCamera(e: React.FormEvent) {
+    e.preventDefault();
+    setCameraError(null);
+    setCreatingCamera(true);
+    try {
+      const camera = await createCamera(current.id, {
+        cameraCode,
+        name: cameraName,
+        position: cameraPosition,
+        serialNumber: cameraSerialNumber,
+      });
+      setCameras((prev) => [camera, ...prev]);
+      setCameraCode('');
+      setCameraName('');
+      setCameraSerialNumber('');
+    } catch (err) {
+      setCameraError(err instanceof ApiError ? err.message : 'Unable to create camera.');
+    } finally {
+      setCreatingCamera(false);
+    }
+  }
+
+  async function onMarkCameraFault(cameraId: string) {
+    setCameraError(null);
+    setBusyCameraId(cameraId);
+    try {
+      const updated = await updateCamera(cameraId, { status: 'FAULT' });
+      setCameras((prev) => prev.map((c) => (c.id === cameraId ? updated : c)));
+    } catch (err) {
+      setCameraError(err instanceof ApiError ? err.message : 'Unable to update camera.');
+    } finally {
+      setBusyCameraId(null);
+    }
+  }
+
+  async function onArchiveCamera() {
+    if (!confirmArchiveCamera) return;
+    setArchivingCamera(true);
+    try {
+      const updated = await archiveCamera(confirmArchiveCamera.id);
+      setCameras((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      setConfirmArchiveCamera(null);
+    } catch (err) {
+      setCameraError(err instanceof ApiError ? err.message : 'Unable to archive camera.');
+    } finally {
+      setArchivingCamera(false);
+    }
+  }
+
+  async function onRotateCameraCredential(cameraId: string) {
+    setCameraError(null);
+    setIssuedCameraCredential(null);
+    setBusyCameraId(cameraId);
+    try {
+      const result = await rotateCameraCredential(cameraId);
+      setIssuedCameraCredential({ cameraId, token: result.token });
+      setCameras((prev) => prev.map((c) => (c.id === cameraId ? { ...c, credentialSetAt: result.issuedAt } : c)));
+    } catch (err) {
+      setCameraError(err instanceof ApiError ? err.message : 'Unable to issue a credential.');
+    } finally {
+      setBusyCameraId(null);
+    }
+  }
+
+  async function onViewStream(cameraId: string) {
+    setCameraError(null);
+    setBusyCameraId(cameraId);
+    try {
+      const result = await getCameraStream(cameraId);
+      setStreamMessage({ cameraId, message: result.message });
+    } catch (err) {
+      setCameraError(err instanceof ApiError ? err.message : 'Unable to check stream availability.');
+    } finally {
+      setBusyCameraId(null);
     }
   }
 
@@ -344,6 +457,106 @@ function BusEditForm({
         )}
         {deviceError && <p className="text-sm text-red-600 dark:text-red-400">{deviceError}</p>}
       </div>
+
+      {canReadCameras && (
+        <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Cameras</h2>
+          {cameras.length === 0 && <EmptyState title="No cameras on this bus" />}
+          {cameras.map((c) => (
+            <div key={c.id} className="space-y-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {c.name} · {c.position === 'CUSTOM' ? c.customPositionLabel : c.position}
+                  </p>
+                  <p className="text-xs text-zinc-500">
+                    {c.cameraCode} · Serial {c.serialNumber}
+                    {c.firmwareVersion ? ` · Firmware ${c.firmwareVersion}` : ''}
+                  </p>
+                  <p className="text-xs text-zinc-500">
+                    Last seen: {c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : 'Never'}
+                    {' · '}Credential: {c.credentialSetAt ? `issued ${new Date(c.credentialSetAt).toLocaleDateString()}` : 'not issued'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={c.connectivity} />
+                  <StatusBadge status={c.status} />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" onClick={() => onViewStream(c.id)} disabled={busyCameraId === c.id}>
+                  View stream
+                </Button>
+                {canManageCameras && c.status !== 'RETIRED' && (
+                  <Button variant="secondary" onClick={() => onRotateCameraCredential(c.id)} disabled={busyCameraId === c.id}>
+                    {c.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
+                  </Button>
+                )}
+                {canManageCameras && c.status === 'ACTIVE' && (
+                  <Button variant="secondary" onClick={() => onMarkCameraFault(c.id)} disabled={busyCameraId === c.id}>
+                    Mark fault
+                  </Button>
+                )}
+                {canManageCameras && c.status !== 'RETIRED' && (
+                  <Button variant="danger" onClick={() => setConfirmArchiveCamera(c)} disabled={busyCameraId === c.id}>
+                    Retire
+                  </Button>
+                )}
+              </div>
+              {streamMessage?.cameraId === c.id && (
+                <p className="rounded-md bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                  {streamMessage.message}
+                </p>
+              )}
+              {issuedCameraCredential?.cameraId === c.id && (
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  <p className="font-medium">Copy this credential now — it will not be shown again:</p>
+                  <code className="mt-1 block break-all font-mono">{issuedCameraCredential.token}</code>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {canManageCameras && (
+            <form onSubmit={onCreateCamera} className="grid grid-cols-2 gap-2 pt-2">
+              <FormField label="Camera code" htmlFor="cameraCode">
+                <Input id="cameraCode" required value={cameraCode} onChange={(e) => setCameraCode(e.target.value)} />
+              </FormField>
+              <FormField label="Name" htmlFor="cameraName">
+                <Input id="cameraName" required value={cameraName} onChange={(e) => setCameraName(e.target.value)} />
+              </FormField>
+              <FormField label="Position" htmlFor="cameraPosition">
+                <Select id="cameraPosition" value={cameraPosition} onChange={(e) => setCameraPosition(e.target.value as typeof cameraPosition)}>
+                  {/* CUSTOM is excluded here — it requires a customPositionLabel this quick-add form doesn't collect; edit via the API/a future dedicated form if needed. */}
+                  {CAMERA_POSITIONS.filter((p) => p !== 'CUSTOM').map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Serial number" htmlFor="cameraSerialNumber">
+                <Input id="cameraSerialNumber" required value={cameraSerialNumber} onChange={(e) => setCameraSerialNumber(e.target.value)} />
+              </FormField>
+              <Button type="submit" loading={creatingCamera} className="col-span-2">
+                Add camera
+              </Button>
+            </form>
+          )}
+          {cameraError && <p className="text-sm text-red-600 dark:text-red-400">{cameraError}</p>}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!confirmArchiveCamera}
+        title="Retire this camera?"
+        description="A retired camera is removed from service, its device credential stops working immediately, and this cannot be reversed."
+        confirmLabel="Retire"
+        danger
+        loading={archivingCamera}
+        onConfirm={onArchiveCamera}
+        onCancel={() => setConfirmArchiveCamera(null)}
+      />
 
       <ConfirmDialog
         open={confirmArchive}

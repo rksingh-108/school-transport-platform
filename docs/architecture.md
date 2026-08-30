@@ -230,7 +230,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `trips` / `trip-stops` / `trip-students` | a route's execution instance, its immutable stop snapshot, and the per-student manifest | attendance event history (owned by `attendance`) |
 | `attendance` | append-only boarding/drop-off events + derived current status | trip scheduling |
 | `gps` | live + historical device telemetry | camera data |
-| `cameras` | device inventory + health | recordings (owned by `files`) |
+| `cameras` (Phase 2 Step 11) | camera identity/lifecycle/health, layered on `bus-devices`' shared device-credential mechanism — never a second, parallel device-identity table | recordings (would be `files`, once built — not yet); any streaming/AI/incident data |
 | `ai-events` | AI-generated candidate events | final incident record (owned by `incidents`) |
 | `incidents` | human-adjudicated incident lifecycle | raw AI confidence internals |
 | `notifications` | templates, preferences, delivery log | the business event that triggered it |

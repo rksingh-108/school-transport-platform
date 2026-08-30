@@ -119,6 +119,15 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'trips.manage',
     'attendance.read',
     'gps.read',
+    // Phase 2 Step 11 (camera foundation): SCHOOL_ADMIN already has full
+    // read+manage on every other fleet/device domain (buses, drivers,
+    // attendants) — cameras were the one Phase-2-reserved permission pair
+    // that had never been granted anywhere the school's own top operational
+    // authority could use it, the same class of gap fixed for
+    // TRANSPORT_MANAGER (buses.read, Step 3) and TRANSPORT_ADMIN
+    // (notifications.read, Step 9) while reviewing existing grants.
+    'camera.read',
+    'camera.manage',
     'incidents.create',
     'incidents.read',
     'incidents.resolve',
@@ -189,6 +198,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'trips.read',
     'attendance.read',
     'gps.read',
+    // Camera visibility (Phase 2 Step 11) fits the same broad
+    // safety-oversight bucket PRINCIPAL already has for GPS/incidents/
+    // emergency — read-only, never camera.manage (provisioning hardware is
+    // an operational task, not a principal's).
+    'camera.read',
     'ai_events.read',
     'incidents.read',
     'emergency.read',

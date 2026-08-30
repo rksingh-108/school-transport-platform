@@ -100,15 +100,15 @@ enum BusStatus {
 // Renamed from the Phase 0 placeholder values (GPS/CAMERA/EDGE_AI_BOX) to
 // match the names actually specified when this module was built (Phase 1
 // Step 3) — no rows existed under the old names, so this is a same-migration
-// rename, not a data migration. CAMERA_CONTROLLER (a Phase 2 device type) is
-// deliberately not added yet — adding an enum value for a device type this
-// phase does nothing with would be exactly the kind of speculative field the
-// project's anti-over-engineering principle rules out; it's cheap to add
-// later, in the same migration that actually starts using it.
+// rename, not a data migration. CAMERA_CONTROLLER was deliberately withheld
+// until Phase 2 Step 11, the migration that actually starts using it — see
+// Camera below, which reuses this same BusDevice row (credential/heartbeat/
+// health) rather than inventing a parallel device-identity mechanism.
 enum DeviceType {
   GPS_TRACKER
   EDGE_COMPUTER
   NETWORK_GATEWAY
+  CAMERA_CONTROLLER
 }
 
 enum DeviceStatus {
@@ -120,6 +120,50 @@ enum DeviceStatus {
 enum ActiveStatus {
   ACTIVE
   INACTIVE
+}
+
+// Camera-domain enums (Phase 2 Step 11) — see Camera below.
+//
+// CameraPosition: a controlled vocabulary so the frontend is never
+// responsible for validating what "position" means; CUSTOM pairs with
+// Camera.customPositionLabel for the rare case a school's mounting doesn't
+// fit the common five.
+enum CameraPosition {
+  FRONT
+  CABIN
+  REAR
+  LEFT
+  RIGHT
+  DOOR
+  CUSTOM
+}
+
+// CameraStatus is the operational lifecycle a staff member controls
+// (mirrors Bus.status/BusStatus) — deliberately NOT the same concept as
+// connectivity/health (whether the device has reported recently), which is
+// derived from BusDevice.lastSeenAt at read time and never stored (see
+// CamerasService.deriveConnectivity) — storing a second, independently-
+// settable "online/offline" column here would let the two states drift out
+// of sync with no way to tell which one is true. RETIRED is terminal, set
+// only via POST /cameras/:id/archive, same convention as Bus's RETIRED.
+enum CameraStatus {
+  ACTIVE
+  INACTIVE
+  FAULT
+  RETIRED
+}
+
+// What protocol (if any) a camera's live feed uses. NONE (the default) means
+// no stream is configured for this camera yet — the honest, common case in
+// this phase, since no real video provider is wired up. Adding a value here
+// only records what protocol a future real integration would use; it does
+// not, by itself, make any stream available.
+enum CameraStreamType {
+  NONE
+  RTSP
+  HLS
+  WEBRTC
+  VENDOR
 }
 
 enum Shift {
@@ -328,6 +372,7 @@ model School {
   parentStudents         ParentStudent[]
   buses                  Bus[]
   busDevices             BusDevice[]
+  cameras                Camera[]
   drivers                Driver[]
   attendants             Attendant[]
   routes                 Route[]
@@ -534,6 +579,7 @@ model Bus {
   devices   BusDevice[]
   trips     Trip[]
   gpsPoints GpsPoint[]
+  cameras   Camera[]
 
   @@unique([schoolId, registrationNumber])
   @@unique([schoolId, fleetNumber])
@@ -571,11 +617,58 @@ model BusDevice {
   school    School     @relation(fields: [schoolId], references: [id])
   bus       Bus        @relation(fields: [busId], references: [id])
   gpsPoints GpsPoint[]
+  camera    Camera?
 
   @@unique([deviceType, externalDeviceId])
   @@unique([credentialHash])
   @@index([busId])
   @@map("bus_devices")
+}
+
+// A camera belongs to a school and a bus, and is backed 1:1 by a BusDevice
+// row (deviceType CAMERA_CONTROLLER) that supplies everything device-generic
+// this domain needs for free: bearer-credential issuance/rotation
+// (BusDevicesService.rotateCredential, reused as-is by
+// CamerasService.rotateCredential), lastSeenAt/lastHealth (written by the
+// camera heartbeat endpoint — the first real writer of BusDevice.lastHealth,
+// previously a reserved-but-unused column), firmwareVersion, and the
+// external/serial identifier (BusDevice.externalDeviceId, surfaced to
+// clients as CameraDto.serialNumber). This table holds only what's genuinely
+// camera-specific: identity/labeling (name, cameraCode, position),
+// presentation metadata (manufacturer, model), the stream protocol, and the
+// staff-controlled operational lifecycle (status). See
+// docs/adr/0018-camera-device-management-foundation.md.
+//
+// schoolId/busId are denormalized copies of the linked BusDevice's own
+// fields (same convention as GpsPoint) — set once at creation from the
+// device, never independently client-writable, so they can never drift from
+// the device they describe.
+model Camera {
+  id                  String            @id @default(uuid())
+  schoolId            String            @map("school_id")
+  busId               String            @map("bus_id")
+  busDeviceId         String            @unique @map("bus_device_id")
+  cameraCode          String            @map("camera_code")
+  name                String
+  position            CameraPosition
+  // Only meaningful when position = CUSTOM; validated at the Zod/service
+  // layer (not a DB CHECK, matching how this schema handles every other
+  // conditionally-required field).
+  customPositionLabel String?           @map("custom_position_label")
+  status              CameraStatus      @default(ACTIVE)
+  manufacturer        String?
+  model               String?
+  streamType          CameraStreamType  @default(NONE) @map("stream_type")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  school    School    @relation(fields: [schoolId], references: [id])
+  bus       Bus       @relation(fields: [busId], references: [id])
+  busDevice BusDevice @relation(fields: [busDeviceId], references: [id])
+
+  @@unique([schoolId, cameraCode])
+  @@index([busId])
+  @@map("cameras")
 }
 
 model Driver {

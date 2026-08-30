@@ -281,16 +281,15 @@ school-level concern gated by `buses.manage` — unlike `School.status`
 platform-level lifecycle decision.
 
 ### `bus_devices`
-Generic device inventory — a GPS tracker or edge computer today, a camera
-controller once Phase 2 camera work actually starts (not before: adding an
-enum value for a device type nothing uses yet would be exactly the kind of
-speculative addition the project avoids).
+Generic device inventory — a GPS tracker or edge computer, and (since
+Phase 2 Step 11) a camera controller, all sharing one credential/heartbeat/
+health mechanism rather than each device type inventing its own.
 ```sql
 create table bus_devices (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
   bus_id uuid not null references buses(id),
-  device_type text not null check (device_type in ('GPS_TRACKER','EDGE_COMPUTER','NETWORK_GATEWAY')),
+  device_type text not null check (device_type in ('GPS_TRACKER','EDGE_COMPUTER','NETWORK_GATEWAY','CAMERA_CONTROLLER')),
   external_device_id text not null, -- serial/IMEI from hardware vendor — not a secret
   firmware_version text,
   metadata jsonb, -- device configuration (e.g. reporting interval); distinct from last_health
@@ -314,8 +313,51 @@ create index on bus_devices (bus_id);
 As with `buses.status`, `PATCH` cannot set `status` to `INACTIVE` directly;
 only `POST /devices/:id/deactivate` can. `credential_hash`'s RLS policy
 carries the same platform-admin bypass as `users`/`refresh_tokens` (§5) —
-`GpsService` looks a device up by this hash before its tenant is known, the
-same shape as a login/refresh-token lookup.
+`GpsService`/`CamerasService` each look a device up by this hash before its
+tenant is known, the same shape as a login/refresh-token lookup.
+
+### `cameras` (Phase 2 Step 11)
+A camera belongs to a school and a bus, and is backed 1:1 by a
+`bus_devices` row (`device_type = 'CAMERA_CONTROLLER'`) that supplies
+everything device-generic for free: credential issuance/rotation,
+`last_seen_at`/`last_health`, `firmware_version`, and the external/serial
+identifier (surfaced to clients as `serialNumber`). This table holds only
+what's genuinely camera-specific — see
+[ADR 0018](adr/0018-camera-device-management-foundation.md) for why a
+second, parallel device-identity table was deliberately avoided.
+```sql
+create table cameras (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  bus_id uuid not null references buses(id),
+  bus_device_id uuid not null unique references bus_devices(id),
+  camera_code text not null,
+  name text not null,
+  position text not null check (position in ('FRONT','CABIN','REAR','LEFT','RIGHT','DOOR','CUSTOM')),
+  custom_position_label text, -- required (at the Zod/service layer, not a DB CHECK) only when position = CUSTOM
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','FAULT','RETIRED')),
+  manufacturer text,
+  model text,
+  stream_type text not null default 'NONE' check (stream_type in ('NONE','RTSP','HLS','WEBRTC','VENDOR')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (school_id, camera_code)
+);
+create index on cameras (bus_id);
+```
+No `stream_status`/"online" column exists — connectivity (`ONLINE`/
+`STALE`/`OFFLINE`/`UNKNOWN`) is derived at read time from the linked
+`bus_devices.last_seen_at` against `CAMERA_LIVE_THRESHOLD_SECONDS`/
+`CAMERA_STALE_THRESHOLD_SECONDS`, the same lazy-freshness pattern as GPS's
+`BusLocationDto.freshness` — storing a second, independently-settable
+"online" flag would let it drift from the truth with no way to tell which
+one is right. As with `buses.status`/`bus_devices.status`, `PATCH` cannot
+set `status` to `RETIRED` directly; only `POST /cameras/:id/archive` can,
+which also sets the linked `bus_devices.status` to `INACTIVE` in the same
+transaction — `resolveDeviceByCredential` only matches `ACTIVE` devices, so
+a retired camera's credential silently stops authenticating with no
+separate revocation step. No `camera_events`/`ai_events`/recording tables
+exist yet — those remain Phase 2/3 (§4).
 
 ### `drivers`, `attendants`
 Transport-specific profiles layered onto an existing `User` — never a second
@@ -757,9 +799,9 @@ mint a short-lived signed URL after an authorization check — see
 
 - `geofences(id, school_id, name, kind[SCHOOL_ZONE|ROUTE_CORRIDOR], polygon geography, ...)`
 - `speed_events(id, school_id, bus_id, trip_id, recorded_speed_kmh, limit_kmh, occurred_at, ...)`
-- `cameras(id, school_id, bus_id, bus_device_id, position, status, ...)` — thin
-  extension of `bus_devices` for camera-specific config.
-- `camera_events(id, school_id, camera_id, kind[OFFLINE|OBSTRUCTED|HEARTBEAT], ...)`
+- `camera_events(id, school_id, camera_id, kind[OFFLINE|OBSTRUCTED|HEARTBEAT], ...)` —
+  `cameras` itself now exists (§3, Phase 2 Step 11); this event/history log
+  does not yet.
 - `ai_events(id, school_id, bus_id, camera_id, event_type, confidence, severity, occurred_at, clip_file_id, model_version, status[NEW|REVIEWED|DISMISSED], metadata jsonb)`
 - `incidents(id, school_id, ai_event_id nullable, opened_by, status[OPEN|INVESTIGATING|RESOLVED], severity, summary, resolution, resolved_at, ...)`
 - `incident_events(id, incident_id, actor_id, action, notes, occurred_at)` — append-only

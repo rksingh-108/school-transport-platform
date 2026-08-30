@@ -162,6 +162,49 @@ export interface DeviceCredentialDto {
   issuedAt: string;
 }
 
+/**
+ * Never includes the underlying BusDevice's credential hash, `metadata`, or
+ * `lastHealth` raw blob — a camera's own operational status and lifecycle
+ * are the sensitive-enough surface for CRUD/list views; the diagnostic
+ * payload isn't (see docs/security.md's camera section). `connectivity` is
+ * derived server-side from the device's `lastSeenAt` at read time (the same
+ * lazy freshness pattern as GPS's `BusLocationDto.freshness`) — it is never
+ * stored, and a client can never set it. `serialNumber`/`firmwareVersion`
+ * are the linked BusDevice's own fields, surfaced under camera-domain names.
+ */
+export interface CameraDto {
+  id: string;
+  busId: string;
+  cameraCode: string;
+  name: string;
+  position: 'FRONT' | 'CABIN' | 'REAR' | 'LEFT' | 'RIGHT' | 'DOOR' | 'CUSTOM';
+  customPositionLabel: string | null;
+  status: 'ACTIVE' | 'INACTIVE' | 'FAULT' | 'RETIRED';
+  manufacturer: string | null;
+  model: string | null;
+  serialNumber: string;
+  firmwareVersion: string | null;
+  streamType: 'NONE' | 'RTSP' | 'HLS' | 'WEBRTC' | 'VENDOR';
+  connectivity: 'ONLINE' | 'STALE' | 'OFFLINE' | 'UNKNOWN';
+  lastSeenAt: string | null;
+  credentialSetAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Response for `GET /cameras/:id/stream`. There is deliberately no status
+ * value that claims a real, live feed — no real stream provider exists yet
+ * (Phase 2 Step 11 is the camera-inventory/device-management foundation,
+ * not streaming). `SIMULATED` is the dev/test mock provider's honest label,
+ * never presented as "live" by the frontend. See
+ * docs/adr/0018-camera-device-management-foundation.md.
+ */
+export interface CameraStreamAvailabilityDto {
+  status: 'NOT_CONFIGURED' | 'SIMULATED';
+  message: string;
+}
+
 /** A reusable planned path — never a specific day's execution (that's the future Trip). See docs/database.md §8. */
 export interface RouteDto {
   id: string;

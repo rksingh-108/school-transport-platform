@@ -286,6 +286,53 @@ async function seedDemoSchool() {
     create: { schoolId: school.id, busId: bus.id, deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-A-0001' },
   });
 
+  // Cameras (Phase 2 Step 11) — a small, deliberately varied fixture set:
+  // two ACTIVE cameras on the primary bus (enough to exercise "a bus has
+  // multiple cameras"), one INACTIVE camera to exercise the non-default
+  // status in the UI, and no credential issued on any of them by default
+  // (matching GPS devices' own "NULL until explicitly issued" convention —
+  // see docs/security.md#5.1-device-security). Not seeded: any recording or
+  // AI-event data — neither exists in this phase.
+  async function upsertCamera(params: {
+    busId: string;
+    cameraCode: string;
+    name: string;
+    position: 'FRONT' | 'CABIN' | 'REAR' | 'LEFT' | 'RIGHT' | 'DOOR' | 'CUSTOM';
+    serialNumber: string;
+    status?: 'ACTIVE' | 'INACTIVE' | 'FAULT' | 'RETIRED';
+  }) {
+    const device = await prisma.busDevice.upsert({
+      where: { deviceType_externalDeviceId: { deviceType: 'CAMERA_CONTROLLER', externalDeviceId: params.serialNumber } },
+      update: {},
+      create: { schoolId: school.id, busId: params.busId, deviceType: 'CAMERA_CONTROLLER', externalDeviceId: params.serialNumber, firmwareVersion: '2.0.1' },
+    });
+    return prisma.camera.upsert({
+      where: { schoolId_cameraCode: { schoolId: school.id, cameraCode: params.cameraCode } },
+      update: {},
+      create: {
+        schoolId: school.id,
+        busId: params.busId,
+        busDeviceId: device.id,
+        cameraCode: params.cameraCode,
+        name: params.name,
+        position: params.position,
+        manufacturer: 'Hikvision',
+        model: 'DS-Fleet-200',
+        status: params.status ?? 'ACTIVE',
+      },
+    });
+  }
+  await upsertCamera({ busId: bus.id, cameraCode: 'CAM-A-FRONT', name: 'Front Camera', position: 'FRONT', serialNumber: 'DEV-CAM-A-0001' });
+  await upsertCamera({ busId: bus.id, cameraCode: 'CAM-A-CABIN', name: 'Cabin Camera', position: 'CABIN', serialNumber: 'DEV-CAM-A-0002' });
+  await upsertCamera({
+    busId: bus2.id,
+    cameraCode: 'CAM-A2-REAR',
+    name: 'Rear Camera',
+    position: 'REAR',
+    serialNumber: 'DEV-CAM-A-0003',
+    status: 'INACTIVE',
+  });
+
   let route = await prisma.route.findFirst({ where: { schoolId: school.id, name: 'Route 1 — Morning' } });
   if (!route) {
     route = await prisma.route.create({
@@ -793,6 +840,29 @@ async function seedSchoolB() {
     where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-B-0001' } },
     update: {},
     create: { schoolId: school.id, busId: busB1.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-B-0001', firmwareVersion: '1.3.2' },
+  });
+
+  // One camera for School B — exists solely so cross-tenant isolation
+  // (School A must never see it, and vice versa) has a real second-tenant
+  // row to test against, same reasoning as this school's GPS device above.
+  const cameraDeviceB1 = await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'CAMERA_CONTROLLER', externalDeviceId: 'DEV-CAM-B-0001' } },
+    update: {},
+    create: { schoolId: school.id, busId: busB1.id, deviceType: 'CAMERA_CONTROLLER', externalDeviceId: 'DEV-CAM-B-0001', firmwareVersion: '2.0.1' },
+  });
+  await prisma.camera.upsert({
+    where: { schoolId_cameraCode: { schoolId: school.id, cameraCode: 'CAM-B-FRONT' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      busId: busB1.id,
+      busDeviceId: cameraDeviceB1.id,
+      cameraCode: 'CAM-B-FRONT',
+      name: 'Front Camera',
+      position: 'FRONT',
+      manufacturer: 'Hikvision',
+      model: 'DS-Fleet-200',
+    },
   });
 
   let routeB = await prisma.route.findFirst({ where: { schoolId: school.id, name: 'Route 1 — Morning (School B)' } });

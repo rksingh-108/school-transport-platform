@@ -189,7 +189,24 @@ surface):
 ## Phase 2 — Operational Safety
 1. Bus hardware integration hardening (real device protocol, MQTT ingestion
    adapter replacing/augmenting HTTP).
-2. Camera management module (inventory, health, heartbeat) — no AI yet.
+2. **Camera management module (inventory, health, heartbeat) — no AI yet.
+   Done** — `CamerasModule` (`apps/api/src/cameras/`): camera inventory,
+   bus association, staff-only CRUD/lifecycle
+   (`ACTIVE`/`INACTIVE`/`FAULT`/terminal `RETIRED`), device authentication
+   reusing `BusDevice`'s existing credential mechanism
+   (`deviceType: 'CAMERA_CONTROLLER'`, no parallel device-identity table),
+   a device heartbeat endpoint, and a stream-availability abstraction that
+   never claims a real feed exists (no provider is wired up this phase).
+   See [ADR 0018](adr/0018-camera-device-management-foundation.md). Tests:
+   full CRUD/lifecycle, RBAC (`DRIVER`/`BUS_ATTENDANT` denied despite
+   `gps.read`, parent denied everywhere including `/stream`), cross-tenant
+   IDOR, device-credential security (including a GPS tracker's credential
+   specifically rejected for a camera heartbeat), RLS, and audit-not-per-
+   heartbeat — confirmed both in e2e tests and live against the running
+   server. **Not done** (explicitly deferred, per this step's own scope):
+   camera streaming/recording/playback, camera-triggered events
+   (`camera_events`), any AI processing, MQTT device ingestion (heartbeat
+   stays HTTP, matching GPS).
 3. Emergency system (real escalation: staff notification fanout, status tracking).
 4. Geofencing (school zone, route corridor) + violation events.
 5. Speed monitoring + violation events.

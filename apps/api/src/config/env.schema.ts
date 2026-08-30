@@ -88,6 +88,20 @@ export const envSchema = z.object({
   // policy.
   NOTIFICATION_MAX_DELIVERY_ATTEMPTS: z.coerce.number().int().positive().default(3),
   NOTIFICATION_RETRY_BACKOFF_MS: z.coerce.number().int().nonnegative().default(200),
+
+  // Camera foundation (Phase 2 Step 11) — same lazily-derived-at-read
+  // freshness pattern as GPS_LIVE_THRESHOLD_SECONDS/GPS_STALE_THRESHOLD_SECONDS,
+  // not a shared constant, because a camera controller's realistic heartbeat
+  // cadence (on the order of a minute) is much slower than a GPS device's
+  // (a few seconds), so the same numbers would misclassify one of the two.
+  // See CamerasService.deriveConnectivity.
+  CAMERA_LIVE_THRESHOLD_SECONDS: z.coerce.number().int().positive().default(180),
+  CAMERA_STALE_THRESHOLD_SECONDS: z.coerce.number().int().positive().default(900),
+  // No real stream provider exists this phase (see
+  // apps/api/src/cameras/providers/) — NOT_CONFIGURED is always safe;
+  // MOCK is a clearly-labeled dev/test simulator, explicitly rejected in
+  // production below, the same discipline as the GPS dev simulator.
+  CAMERA_STREAM_PROVIDER: z.enum(['NOT_CONFIGURED', 'MOCK']).default('NOT_CONFIGURED'),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -137,6 +151,9 @@ export function validateEnv(config: Record<string, unknown>): Env {
     }
     if (KNOWN_DEV_ONLY_STORAGE_CREDENTIALS.has(env.STORAGE_SECRET_KEY)) {
       problems.push('STORAGE_SECRET_KEY is the well-known MinIO development default — set a real credential.');
+    }
+    if (env.CAMERA_STREAM_PROVIDER === 'MOCK') {
+      problems.push('CAMERA_STREAM_PROVIDER must not be MOCK in production — it is a dev/test-only simulated stream.');
     }
     if (problems.length > 0) {
       throw new Error(`Refusing to start with NODE_ENV=production using unsafe configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
