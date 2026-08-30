@@ -191,14 +191,23 @@ rule (`eslint-plugin-boundaries`), not just convention.
   `{ code, message, requestId, details? }`; internal errors never leak stack traces.
 - **Observability**: request-id middleware, structured JSON logs (pino), and a
   `/health`, `/health/ready`, `/health/live` set of endpoints from day one.
-- **Realtime**: a single WebSocket gateway namespace per concern — `/realtime/fleet`
-  (staff fleet tracking, implemented Phase 1 Step 7) is the first one built.
+- **Realtime**: a separate WebSocket gateway namespace per concern —
+  `/realtime/fleet` (staff fleet tracking, Phase 1 Step 7) and
+  `/realtime/parent` (child-scoped parent transport updates, Phase 1
+  Step 8). The two are fully isolated: a parent socket never joins a fleet/
+  bus room and a staff socket never joins a child room. `ParentGateway`
+  reacts to `GpsGateway`'s location updates via a plain in-process
+  `EventEmitter` (`GpsGateway.onLocationUpdate`) rather than a second
+  current-location pipeline, keeping the dependency direction one-way
+  (`parents` module imports `gps`, never the reverse) — see
+  [ADR 0015](adr/0015-parent-transport-tracking.md).
   **Deviation**: no Redis Socket.IO adapter yet — this was the Phase 0 plan
   ("backed by the Redis adapter so it can scale horizontally later"), but
   Step 7's instructions to avoid speculative infrastructure took precedence
   at MVP's single-instance scale; see
   [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the
-  swap-in point when horizontal scaling is real.
+  swap-in point when horizontal scaling is real. This applies equally to
+  `/realtime/parent`.
 
 ## 4. Module Boundaries — Ownership Table
 
@@ -207,7 +216,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `schools` | tenant record, subscription/plan metadata | any student/parent PII |
 | `rbac` | roles, permissions, role_permissions | user profile data |
 | `students` | student profile, school linkage | camera/AI data |
-| `parents` | parent profile, auth identity link | student profile fields |
+| `parents` | parent profile, auth identity link, and (Phase 1 Step 8) the parent-safe transport composition layer (`ParentTransportService`/`ParentGateway`) | student profile fields; never a second copy of trip/attendance/GPS data — reads through `gps`'s own service/gateway, never duplicates its logic |
 | `parent-students` | the relationship + verification status | either side's core profile |
 | `invitations` | onboarding token lifecycle (staff + parent, polymorphic) | password/credential storage (still owned by `users`/`parents`) |
 | `buses` / `bus-devices` | vehicle + device inventory | live telemetry (owned by `gps`) |

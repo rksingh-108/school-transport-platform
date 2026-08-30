@@ -37,7 +37,7 @@ requirements this document does not attempt to interpret authoritatively.
 |---|---|---|---|
 | Student profile (name, DOB, grade, photo) | School admin | School staff per RBAC; parent sees own child's name/photo only | Retained while enrolled + configurable post-graduation window |
 | Parent profile (name, phone, email) | Parent/school | School staff, the parent themself | While account active |
-| Trip manifest (which student is planned on which trip, pickup/dropoff stop) | School staff (Phase 1 Step 5) | School staff per RBAC (`trips.read`/`trips.manage`) only — **no parent access exists yet**; a parent-facing "where is my child's trip today" view is a future, narrowly-scoped endpoint, never this staff management API | Soft-removed only, never hard-deleted (kept for the trip's own historical record); no separate retention job yet, tracked in [roadmap.md](roadmap.md) |
+| Trip manifest (which student is planned on which trip, pickup/dropoff stop) | School staff (Phase 1 Step 5) | School staff per RBAC (`trips.read`/`trips.manage`); parent sees a simplified trip status for their own child only, via a dedicated parent-safe view (Phase 1 Step 8) — never this staff management API, never a raw manifest/`TripStudent` row | Soft-removed only, never hard-deleted (kept for the trip's own historical record); no separate retention job yet, tracked in [roadmap.md](roadmap.md) |
 | Attendance/boarding events | Attendant app, device sources | School staff per RBAC; parent sees own child's events | Configurable per school (default 1 year), see §4 |
 | GPS points | Bus device | School staff (`gps.read`); parent sees only current/derived location for own child's active trip, never raw historical trails | Raw points: short window (default 90 days) then aggregated/discarded; live state not retained beyond trip completion in derived form |
 | Camera footage/clips (Phase 2) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
@@ -45,6 +45,24 @@ requirements this document does not attempt to interpret authoritatively.
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
+
+**Implementation status (Phase 1 Step 8):** parent access to trip/attendance/
+location data is now real, superseding the "does not exist yet" statements
+in the Step 6 and Step 7 notes below. Concretely, `GET /parent/children`
+(enriched) and `GET /parent/children/:studentId/transport` give a parent a
+**simplified, parent-safe view only**: which of the four attendance states
+their own child is in, a plain-text trip status, a bus display name
+(never an id), and — only while that specific trip is `IN_PROGRESS` — a
+current latitude/longitude/speed/heading and freshness identical to what
+staff see for the same bus. A parent still never receives: raw
+`AttendanceEvent` history or corrections, who recorded an event, any
+`TripStudent`/`Trip`/`Bus`/`BusDevice`/`GpsPoint` id, historical GPS
+telemetry, or a location for any trip that isn't currently in progress
+(see [ADR 0015](adr/0015-parent-transport-tracking.md) for the exact field
+list). This is delivered as a live *view* (REST + a dedicated
+`/realtime/parent` WebSocket channel) — no push notification (SMS/email/
+native push) exists yet; that remains Phase 1 Step 9, exactly as the
+now-superseded notes below anticipated.
 
 **Implementation status (Phase 1 Step 7):** the "GPS points" row above is
 only partially built. Raw telemetry (`GpsPoint`) and a Redis-backed current
@@ -98,7 +116,20 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
 - Any other student's data, including siblings' classmates on the same bus.
 - Any other bus/route not currently carrying their verified child.
 - Driver/attendant personal data beyond what the school chooses to expose (default:
-  first name + bus assignment; not phone/address/license number).
+  first name + bus assignment; not phone/address/license number). As of Phase 1
+  Step 8, driver/attendant identity isn't exposed to parents **at all** yet — the
+  transport view surfaces only a bus display name, no crew information.
+- Raw GPS telemetry history, device IDs, device metadata, or device credentials
+  (Phase 1 Step 8) — a parent's location view is always the current-moment
+  snapshot for their own child's active trip only, computed server-side; there
+  is no endpoint that returns a list of past positions or any `GpsPoint`/
+  `BusDevice` row to a parent session.
+- Internal attendance event history, corrections, or who recorded an event
+  (Phase 1 Step 8) — a parent sees one of four simplified states
+  (`EXPECTED`/`BOARDED`/`ABSENT`/`DROPPED_OFF`), never `AttendanceEvent` rows.
+- Any internal database id (`Trip`/`TripStudent`/`Bus`/`BusDevice`/`GpsPoint`)
+  — the parent transport DTOs (Phase 1 Step 8) are hand-built and never
+  serialize an internal entity.
 
 ## 4. Retention & Deletion
 

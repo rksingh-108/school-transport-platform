@@ -224,6 +224,20 @@ export class GpsService {
     return Promise.all(busIds.map((busId) => this.readCurrentLocation(principal.schoolId, busId)));
   }
 
+  /**
+   * Public entry point for callers that have already authorized a specific
+   * bus through a DIFFERENT relationship — e.g. `ParentTransportService`,
+   * after resolving the bus through a verified child's own active trip
+   * (Phase 1 Step 8). No RBAC/scope check happens here: the caller is
+   * responsible for having already established that this school/bus pair is
+   * legitimate for its own purpose. Reuses the exact same Redis-backed
+   * current-location resolution staff reads use — no parallel
+   * implementation.
+   */
+  async getLocationSnapshotForBus(schoolId: string, busId: string): Promise<BusLocationDto> {
+    return this.readCurrentLocation(schoolId, busId);
+  }
+
   async getBusHistory(principal: AuthenticatedPrincipal, busId: string, query: GpsHistoryQuery): Promise<GpsPointDto[]> {
     await this.assertBusAccessible(principal, busId);
     const points = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>

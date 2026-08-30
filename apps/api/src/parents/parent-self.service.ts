@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { ParentLinkedChildDto } from '@school-transport/shared-types';
+import type { ParentChildWithTransportDto, ParentLinkedChildDto } from '@school-transport/shared-types';
 import { PrismaService } from '../database/prisma.service';
+import { ParentTransportService } from './parent-transport.service';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
 
 /**
@@ -8,16 +9,25 @@ import type { AuthenticatedPrincipal } from '../auth/types/principal';
  * VERIFIED parent_students links (docs/security.md#4-parent-data-access-boundary),
  * never a raw studentId. The DTO returned is deliberately minimal: no
  * school-internal fields, no other students, nothing beyond what a parent
- * needs to identify their own child. Bus/trip/attendance fields are not
- * added here — those features don't exist yet (Phase 1 later steps); the
- * shape is prepared (docs/security.md#12-parent-data-exposure) but not
- * populated ahead of the features that would supply real data for it.
+ * needs to identify their own child (plus, since Phase 1 Step 8, a
+ * transport summary — see `getMyChildren` below and
+ * docs/adr/0015-parent-transport-tracking.md).
  */
 @Injectable()
 export class ParentSelfService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly parentTransportService: ParentTransportService,
+  ) {}
 
-  async getMyChildren(principal: AuthenticatedPrincipal): Promise<ParentLinkedChildDto[]> {
+  /**
+   * Enriched with a per-child transport summary (Phase 1 Step 8) so the "My
+   * Children" dashboard never needs a follow-up request per child. Resolved
+   * once per verified child in parallel — bounded by how many children this
+   * one parent has (never school-wide), not the N+1 pattern the "avoid
+   * N+1" requirement is about.
+   */
+  async getMyChildren(principal: AuthenticatedPrincipal): Promise<ParentChildWithTransportDto[]> {
     const links = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
       tx.parentStudent.findMany({
         where: { parentId: principal.id, verified: true },
@@ -26,14 +36,16 @@ export class ParentSelfService {
       }),
     );
 
-    return links
-      .filter((link) => !link.student.deletedAt)
-      .map((link) => ({
+    const activeLinks = links.filter((link) => !link.student.deletedAt);
+    return Promise.all(
+      activeLinks.map(async (link) => ({
         id: link.student.id,
         fullName: link.student.fullName,
         grade: link.student.grade,
         section: link.student.section,
-      }));
+        transport: await this.parentTransportService.getSummary(principal.schoolId, link.student.id),
+      })),
+    );
   }
 
   /**

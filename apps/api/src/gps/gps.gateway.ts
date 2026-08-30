@@ -1,4 +1,5 @@
 import { forwardRef, Inject } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -12,6 +13,12 @@ import { AuthService } from '../auth/services/auth.service';
 import { RbacService } from '../auth/services/rbac.service';
 import { GpsService } from './gps.service';
 
+export interface GpsLocationUpdate {
+  schoolId: string;
+  busId: string;
+  payload: BusLocationUpdatedEvent;
+}
+
 // @WebSocketGateway's options are resolved at class-decoration time, before
 // Nest's DI container exists — the same reason auth.controller.ts reads
 // throttle limits from a module-level constant rather than ConfigService.
@@ -19,10 +26,13 @@ import { GpsService } from './gps.service';
 const CORS_ORIGIN = process.env['CORS_ORIGIN'] ?? 'http://localhost:3000';
 
 /**
- * Realtime fleet-location fan-out (Phase 1 Step 7). STAFF-only in this
- * phase — parents get no live tracking at all yet (that's Step 8), so a
- * parent token is rejected here exactly like an unauthenticated connection,
- * not merely "given no rooms."
+ * Realtime fleet-location fan-out (Phase 1 Step 7). STAFF-only — a parent
+ * token is rejected here exactly like an unauthenticated connection, not
+ * merely "given no rooms." Parents get their own separate realtime channel
+ * (`ParentGateway`, `/realtime/parent`, Phase 1 Step 8), which subscribes to
+ * this gateway's location updates via `onLocationUpdate` below rather than
+ * ever joining a room here — a parent socket never touches this namespace
+ * at all.
  *
  * Room granularity mirrors the REST scoping in GpsService.resolveGpsScope:
  * unscoped staff (SCHOOL_ADMIN/TRANSPORT_ADMIN/TRANSPORT_MANAGER/PRINCIPAL/
@@ -48,6 +58,11 @@ const CORS_ORIGIN = process.env['CORS_ORIGIN'] ?? 'http://localhost:3000';
 @WebSocketGateway({ namespace: '/realtime/fleet', cors: { origin: CORS_ORIGIN, credentials: true } })
 export class GpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() private server!: Server;
+  // Plain Node EventEmitter, not a new dependency — lets ParentGateway (a
+  // different module) react to location updates without GpsGateway needing
+  // to know parents exist at all. Keeps the dependency direction one-way
+  // (parents -> gps), matching this module's own layering.
+  private readonly locationEvents = new EventEmitter();
 
   constructor(
     private readonly tokenService: TokenService,
@@ -62,7 +77,7 @@ export class GpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!token) throw new Error('missing token');
 
       const claims = this.tokenService.verifyAccessToken(token);
-      if (claims.type !== 'STAFF') throw new Error('parents have no fleet-tracking access in this phase');
+      if (claims.type !== 'STAFF') throw new Error('only staff may join the fleet-tracking namespace');
 
       const principal = await this.authService.loadAuthenticatedPrincipal(claims.schoolId, claims.type, claims.sub);
       if (!principal) throw new Error('account no longer active');
@@ -90,6 +105,12 @@ export class GpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /** Called by GpsService after a fresh, monotonically-newer fix is accepted. Never called with any other tenant's data. */
   emitLocationUpdate(schoolId: string, busId: string, payload: BusLocationUpdatedEvent): void {
     this.server.to(this.fleetRoom(schoolId)).to(this.busRoom(schoolId, busId)).emit('bus.location.updated', payload);
+    this.locationEvents.emit('update', { schoolId, busId, payload } satisfies GpsLocationUpdate);
+  }
+
+  /** Subscribes to every accepted location update, in-process — used by `ParentGateway` to derive its own child-scoped, parent-safe event without this class needing any parent-domain knowledge. */
+  onLocationUpdate(listener: (update: GpsLocationUpdate) => void): void {
+    this.locationEvents.on('update', listener);
   }
 
   private fleetRoom(schoolId: string): string {

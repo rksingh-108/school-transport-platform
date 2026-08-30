@@ -464,6 +464,22 @@ async function seedDemoSchool() {
     },
   });
 
+  // Same parent, second child (Phase 1 Step 8) — so the parent dashboard's
+  // multi-child case has real data to show without a second dev login.
+  await prisma.parentStudent.upsert({
+    where: { parentId_studentId: { parentId: parent.id, studentId: student2.id } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      parentId: parent.id,
+      studentId: student2.id,
+      relationship: 'MOTHER',
+      verified: true,
+      verifiedBy: schoolAdmin.id,
+      verifiedAt: new Date(),
+    },
+  });
+
   // Trips — see docs/adr/0012-trip-stop-snapshot-and-lifecycle.md for what
   // each field/status means. Realistic fake data across today/yesterday so
   // the dashboard and cross-tenant security tests both have something to

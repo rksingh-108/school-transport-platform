@@ -288,24 +288,34 @@ guarantees are covered in [security.md §5.1](security.md).
 
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
-`ParentSelfController` (`@RequireAudience('PARENT')`, no `@RequirePermission` at
-all by design — parent access is relationship-based, not RBAC-based; see
-[security.md §4](security.md#4-parent-data-access-boundary)).
+`ParentSelfController`/`ParentTransportController` (`@RequireAudience('PARENT')`,
+no `@RequirePermission` at all by design — parent access is relationship-based,
+not RBAC-based; see [security.md §4](security.md#4-parent-data-access-boundary)).
+`@RequireVerifiedChild('studentId')` (`ParentChildAccessGuard`, global) gates
+every route that takes a `studentId` — `404`, never `403`, for anything the
+caller doesn't have a verified link to, so the response never confirms
+whether the id even exists.
 
 | Method | Path | Notes | Status |
 |---|---|---|---|
-| GET | `/parent/children` | List own linked+**verified** children only (`ParentLinkedChildDto`: id, fullName, grade, section — never contact/admission/status fields). | Implemented, Phase 1 Step 2 |
-| GET | `/parent/children/:studentId` | Same shape, single child; `404` (not `403`) if the id isn't a verified link of the caller's, via `@RequireVerifiedChild('studentId')`. | Implemented, Phase 1 Step 2 |
-| GET | `/parent/children/:studentId/status` | current trip status + timeline | Phase 2 (not built) |
-| GET | `/parent/children/:studentId/bus-location` | live location + ETA | Phase 2 (not built) |
+| GET | `/parent/children` | List own linked+**verified** children (`ParentChildWithTransportDto`: id, fullName, grade, section, plus a `transport` summary — trip/attendance status text, bus display name, freshness, no coordinates). One call, no per-child follow-up request. | Implemented, Phase 1 Step 2 (identity fields); enriched with `transport` in Phase 1 Step 8 |
+| GET | `/parent/children/:studentId` | Plain identity only (`ParentLinkedChildDto`) — unrelated to transport, unchanged since Step 2. | Implemented, Phase 1 Step 2 |
+| GET | `/parent/children/:studentId/transport` | The full parent-safe transport view (`ParentTransportDto`) for one child — trip, simplified attendance, bus display name, and (only while the trip is `IN_PROGRESS`) live location + freshness. See [ADR 0015](adr/0015-parent-transport-tracking.md). | Implemented, Phase 1 Step 8 |
 | GET | `/parent/notifications` | own notifications | Phase 2 (not built) |
 | PATCH | `/parent/notification-preferences` | own preferences only | Phase 2 (not built) |
 
-No parent endpoint ever accepts a `busId`, `cameraId`, or `driverId` as a queryable
-resource — parents reach bus/location data only transitively through their own
-`studentId`, which the backend resolves server-side to the current authorized
-bus/trip. This is enforced structurally (the route doesn't exist), not just by a
-permission check, per [product-requirements.md](product-requirements.md#5-parent-experience-contract).
+No parent endpoint ever accepts a `busId`, `tripId`, `deviceId`, `cameraId`, or
+`driverId` as a queryable resource — parents reach bus/location data only
+transitively through their own `studentId`, which the backend resolves
+server-side to the child's current active trip and, from there, its bus
+(`ParentTransportService.resolveActiveTripStudent` →
+`GpsService.getLocationSnapshotForBus`). This is enforced structurally (the
+route doesn't exist, the parameter doesn't exist), not just by a permission
+check, per [product-requirements.md](product-requirements.md#5-parent-experience-contract).
+A parent token is rejected by every internal staff endpoint (`/gps/fleet`,
+`/buses/:id/location`, `/buses/:id/telemetry`, `/students`, etc.) at the
+`@RequireAudience('STAFF')` guard, and a staff token is equally rejected by
+the parent transport endpoints above.
 
 ### Notifications / Reports / Audit
 | Method | Path | Permission |
@@ -350,11 +360,29 @@ None of these are exposed to the parent namespace, ever (see
   location (the monotonic rule — an out-of-order fix is stored but never
   emitted as "current"). See
   [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
-- A parent-facing realtime channel (scoped to one child's active trip) is
-  explicitly **not built yet** — Phase 1 Step 8. `/ws/ops` and `/ws/tracking`
-  above were this doc's original Phase 0 outline names; the implemented
-  namespace/event names differ slightly (`/realtime/fleet`,
-  `bus.location.updated`) and this section now reflects what actually ships.
+- **`/realtime/parent` (Socket.IO namespace, parent only — implemented
+  Phase 1 Step 8)**: a completely separate namespace from `/realtime/fleet`
+  above — a parent socket never connects to the fleet namespace, and a
+  staff token is rejected here the same way a parent token is rejected
+  there. The handshake carries the same `auth: { token }` shape. On
+  success the server joins the socket into `parent:child:{studentId}` for
+  every one of the caller's own verified linked children — never a
+  bus/school room, and never a client-supplied room name (there is no
+  `@SubscribeMessage` handler on this gateway at all). Server pushes
+  `parent.child.transport.updated`:
+  ```
+  { childId, tripStatus, attendanceStatus, busDisplayName, location: { latitude, longitude, speedKmh, heading, freshness }, lastUpdatedAt }
+  ```
+  triggered by the same GPS-ingestion pipeline as `bus.location.updated`
+  (an in-process hook, not a duplicated current-location calculation) — see
+  [ADR 0015](adr/0015-parent-transport-tracking.md) for the exact trigger
+  and its one documented limitation (a boarding/drop-off change with no
+  accompanying GPS fix won't independently push; the REST endpoint always
+  has the true current state on load/reconnect).
+- `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
+  outline names; the implemented namespace/event names differ
+  (`/realtime/fleet`, `/realtime/parent`) and this section now reflects
+  what actually ships.
 
 ## 5. Versioning
 

@@ -75,6 +75,18 @@ export interface ParentLinkedChildDto {
   section: string | null;
 }
 
+/**
+ * `GET /parent/children`'s actual response shape (Phase 1 Step 8) — extends
+ * the identity fields above with a per-child transport summary in the same
+ * response, so the "My Children" dashboard never needs a follow-up request
+ * per child (see docs/adr/0015-parent-transport-tracking.md). `getMyChild`
+ * (`GET /parent/children/:studentId`, Phase 1 Step 2) is unrelated to
+ * transport and still returns the plain `ParentLinkedChildDto` above.
+ */
+export interface ParentChildWithTransportDto extends ParentLinkedChildDto {
+  transport: ParentChildTransportSummaryDto;
+}
+
 export interface BusDto {
   id: string;
   fleetNumber: string | null;
@@ -338,4 +350,88 @@ export interface BusLocationUpdatedEvent {
   recordedAt: string;
   receivedAt: string;
   freshness: 'LIVE' | 'STALE' | 'UNKNOWN';
+}
+
+/** The four attendance states a parent may ever see — never the full internal event history, corrections, or who recorded it (docs/security.md#9-parent-transport-boundary). */
+export type ParentAttendanceStatus = 'EXPECTED' | 'BOARDED' | 'ABSENT' | 'DROPPED_OFF';
+export type ParentTripStatus = 'SCHEDULED' | 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
+
+/**
+ * A lightweight per-child transport summary (Phase 1 Step 8) — attached to
+ * every entry in `GET /parent/children` so the "My Children" dashboard never
+ * needs a follow-up request per child. Deliberately excludes coordinates
+ * (the full location detail lives in `ParentTransportDto`, fetched only for
+ * the child a parent has actually opened) — `freshness` alone is enough for
+ * a summary card. `null` fields mean "no relevant trip/attendance/bus today"
+ * (see docs/adr/0015-parent-transport-tracking.md), never a fabricated value.
+ */
+export interface ParentChildTransportSummaryDto {
+  tripStatus: ParentTripStatus | null;
+  attendanceStatus: ParentAttendanceStatus | null;
+  busDisplayName: string | null;
+  /** Only meaningful while `tripStatus === 'IN_PROGRESS'` — `null` otherwise, never a stale leftover value from an earlier trip. */
+  freshness: 'LIVE' | 'STALE' | 'UNKNOWN' | null;
+}
+
+/**
+ * The full parent-safe transport view for one child
+ * (`GET /parent/children/:studentId/transport`). A deliberately hand-built
+ * DTO, never a passthrough of `TripDto`/`TripStudentDto`/`BusLocationDto` —
+ * see docs/adr/0015-parent-transport-tracking.md for exactly which internal
+ * fields were excluded and why (device IDs, driver/attendant identity,
+ * school/tenant IDs, raw telemetry history, correction/audit metadata).
+ * `trip`/`attendance`/`bus` are `null` together when no trip is relevant to
+ * this child today; `location` is `null` whenever `trip.status` isn't
+ * `'IN_PROGRESS'` — a parent is never shown a location for a trip that
+ * hasn't started or has already ended.
+ */
+export interface ParentTransportDto {
+  child: { id: string; fullName: string; grade: string | null; section: string | null };
+  trip: {
+    id: string;
+    status: ParentTripStatus;
+    direction: 'HOME_TO_SCHOOL' | 'SCHOOL_TO_HOME';
+    scheduledStartTime: string;
+    scheduledEndTime: string;
+  } | null;
+  bus: { displayName: string } | null;
+  attendance: {
+    status: ParentAttendanceStatus;
+    boardedAt: string | null;
+    droppedOffAt: string | null;
+  } | null;
+  location: {
+    latitude: number | null;
+    longitude: number | null;
+    speedKmh: number | null;
+    heading: number | null;
+    lastUpdatedAt: string | null;
+    freshness: 'LIVE' | 'STALE' | 'UNKNOWN';
+  } | null;
+}
+
+/**
+ * The parent-safe realtime event (`parent.child.transport.updated`,
+ * `/realtime/parent` namespace) — pushed only into a room scoped to one
+ * verified child (`parent:child:{studentId}`), never a bus- or school-wide
+ * room. Triggered by the same GPS-ingestion pipeline as the staff
+ * `bus.location.updated` event (see the gateway's internal hook in
+ * ADR 0015), so the payload always reflects live trip/attendance state
+ * alongside the location, not just the location. No `deviceId`/`schoolId`/
+ * `driverId`/`attendantId`/raw telemetry — same exclusions as
+ * `ParentTransportDto`.
+ */
+export interface ParentChildTransportUpdatedEvent {
+  childId: string;
+  tripStatus: ParentTripStatus;
+  attendanceStatus: ParentAttendanceStatus;
+  busDisplayName: string;
+  location: {
+    latitude: number;
+    longitude: number;
+    speedKmh: number | null;
+    heading: number | null;
+    freshness: 'LIVE' | 'STALE' | 'UNKNOWN';
+  };
+  lastUpdatedAt: string;
 }

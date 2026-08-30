@@ -1,4 +1,10 @@
-import type { CursorPage, ParentDto, ParentStudentLinkDto, ParentLinkedChildDto } from '@school-transport/shared-types';
+import type {
+  CursorPage,
+  ParentDto,
+  ParentStudentLinkDto,
+  ParentChildWithTransportDto,
+  ParentTransportDto,
+} from '@school-transport/shared-types';
 import { apiFetch } from '../api-client';
 
 function toQuery(params: object): string {
@@ -51,6 +57,10 @@ export async function unlinkParentStudent(linkId: string): Promise<void> {
 }
 
 // Parent's own (self) view
-export async function getMyChildren(): Promise<ParentLinkedChildDto[]> {
+export async function getMyChildren(): Promise<ParentChildWithTransportDto[]> {
   return apiFetch('/parent/children');
+}
+
+export async function getChildTransport(studentId: string): Promise<ParentTransportDto> {
+  return apiFetch(`/parent/children/${studentId}/transport`);
 }

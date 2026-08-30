@@ -93,19 +93,37 @@ surface):
     current-location rule, retry dedup, device tenant security, cross-tenant
     IDOR, RLS enforcement, and WebSocket tenant/role isolation with a real
     socket.io-client — confirmed both in e2e tests and live against the
-    running server. **Not done**: parent-facing location access (own-child's-
-    bus updates) — that's Phase 1 Step 8, deliberately not started here.
-    Also not done: MQTT ingestion, camera/edge-AI telemetry, geofencing,
-    speed monitoring, GPS data retention/purge job (config placeholder only
-    — see [privacy.md](privacy.md)).
+    running server. Parent-facing location access shipped in Phase 1
+    Step 8 (item 13 below), reusing this module's `GpsService`/`GpsGateway`
+    rather than duplicating them. **Not done**: MQTT ingestion,
+    camera/edge-AI telemetry, geofencing, speed monitoring, GPS data
+    retention/purge job (config placeholder only — see
+    [privacy.md](privacy.md)).
 11. **Notifications** (in-app + one real channel, e.g. push via a provider adapter;
     SMS/email adapters stubbed with a local dev implementation per the "never fake
     an integration silently" rule — the adapter clearly logs "not configured"
     rather than pretending to send).
 12. **Reports (attendance, punctuality) + Audit logs** (audit logging is actually
     wired into every module above retroactively verified here, not bolted on last).
-13. **Parent web/mobile UI** (`(parent)` route group): status, map, timeline,
-    notifications preferences.
+13. **Parent web/mobile UI** (`(parent)` route group). **Done (transport
+    tracking slice)** — `/parent` (My Children, with a per-child transport
+    summary) and `/parent/children/:studentId` (trip status, simplified
+    attendance, live location while `IN_PROGRESS`), realtime via
+    `/realtime/parent`. See
+    [ADR 0015](adr/0015-parent-transport-tracking.md) for the parent-safe
+    DTO design, active-trip resolution, and realtime isolation. Reuses
+    `GpsService`/`GpsGateway` (Step 7), `ParentChildAccessGuard`/
+    `ParentAccessService` (Step 2), and `TripStudent.currentStatus` (Step 6)
+    — no new domain model, no new migration. Tests: active-trip-resolution
+    priority (in-progress/scheduled/completed/cancelled/none), parent-safe
+    DTO field exclusion, multi-child parent, cross-parent and cross-tenant
+    IDOR, RLS enforcement, and WebSocket child-isolation with a real
+    socket.io-client — confirmed both in e2e tests and live against the
+    running server. **Not done**: a real map provider (no vendor
+    configured — see [ADR 0007](adr/0007-map-and-storage-provider-abstraction.md)),
+    a historical/past-trips view (only the current/active trip is
+    resolved), and timeline/notifications-preferences UI (notifications
+    themselves are Step 9, not started).
 14. **School control center UI** (`(school)` route group): live map, trip board,
     exceptions, device health placeholder.
 15. **Driver/Attendant UI**: assigned trips, start/end, manifest, boarding

@@ -229,8 +229,9 @@ child-privacy-sensitivity path in the product):
    the link themselves. **Implemented** as `ParentAccessService`
    (`apps/api/src/auth/services/parent-access.service.ts`, `getVerifiedChildIds`/
    `isVerifiedChild`) and `ParentChildAccessGuard` +
-   `@RequireVerifiedChild('studentId')`, now used by
-   `GET /parent/children/:studentId` (§2.2). Failure returns `404`, never
+   `@RequireVerifiedChild('studentId')`, used by `GET /parent/children/:studentId`
+   (§2.2, Phase 1 Step 2) and, since Phase 1 Step 8,
+   `GET /parent/children/:studentId/transport` (§5.7). Failure returns `404`, never
    `403` — indistinguishable from the student not existing at all, matching
    §3's cross-tenant 404 convention applied to the parent-child boundary. The
    link itself is always staff-initiated (`POST /parents/:id/children`,
@@ -240,10 +241,12 @@ child-privacy-sensitivity path in the product):
    exists in the parent namespace). `GET /parent/children` (list) and
    `/auth/me`'s `linkedChildrenCount` both filter to `verified = true` only.
 3. **Field-level shaping**: parent-facing DTOs are hand-written response shapes
-   (e.g., `ParentTripStatusDto`) that only ever include fields explicitly meant for
-   parents — they are not the internal entity serialized with fields hidden by
-   convention. This means adding an internal field to `Trip` can never accidentally
-   leak to a parent response; a new DTO field is a deliberate, reviewed addition.
+   (`ParentLinkedChildDto`, `ParentChildWithTransportDto`, `ParentTransportDto`,
+   `ParentChildTransportUpdatedEvent` — see §5.7) that only ever include fields
+   explicitly meant for parents — they are not the internal entity serialized
+   with fields hidden by convention. This means adding an internal field to
+   `Trip`/`Bus`/`GpsPoint` can never accidentally leak to a parent response; a
+   new DTO field is a deliberate, reviewed addition.
 
 ## 5. Other Controls
 
@@ -427,11 +430,52 @@ The `/realtime/fleet` WebSocket authenticates its handshake with the same
 access token used for REST (`auth.token`), verified with the existing
 `TokenService`/`AuthService`, then gated by the same `gps.read` check via
 `RbacService`. A parent token is rejected identically to no token at all —
-parents have no live-tracking access in this phase (Step 8). The room a
-socket joins is always computed server-side from `resolveGpsScope`; there
-is no code path where a client can request or discover a room name, closing
-the "arbitrary room" class of IDOR by construction rather than by checking
-it at emit time.
+parents have no access to *this* namespace, ever; their own separate
+live-tracking channel is `/realtime/parent` (§5.7). The room a socket joins
+is always computed server-side from `resolveGpsScope`; there is no code
+path where a client can request or discover a room name, closing the
+"arbitrary room" class of IDOR by construction rather than by checking it
+at emit time.
+
+### 5.7 Parent Transport Authorization
+
+Parent transport reads (Phase 1 Step 8 — `GET /parent/children`'s
+`transport` summary, `GET /parent/children/:studentId/transport`, and the
+`/realtime/parent` WebSocket) are relationship-based, not RBAC-based, same
+as every other parent endpoint (§4) — no `gps.*`/`trips.*`/`attendance.*`
+permission is ever granted to a parent, and none was added for this phase.
+Every read is reached only through
+`ParentTransportService.resolveActiveTripStudent(schoolId, studentId)`,
+which never accepts a bus/trip/device id — only a `studentId` already
+verified by `ParentChildAccessGuard` before the service runs (§4). This
+means there is no parameter anywhere in this phase's parent-facing surface
+that could reference another tenant's, another parent's, or an unrelated
+student's data — the IDOR classes the spec calls out (arbitrary trip,
+arbitrary bus, arbitrary device) don't have a corresponding input to
+supply, structurally, the same technique GPS ingestion (§5.6) and
+attendance's stop-derivation (§5.5) already use.
+
+Bus location for a parent is read via
+`GpsService.getLocationSnapshotForBus(schoolId, busId)` — a public method
+with no RBAC/scope check of its own, callable only because
+`ParentTransportService` has already established the `busId` through the
+child's own verified, active trip. This is deliberate: the check that
+matters (does this parent have a right to see this bus) happened one layer
+up, at the trip-resolution step, not by teaching `GpsService` about
+parents.
+
+`/realtime/parent` (`ParentGateway`) authenticates its handshake exactly
+like `/realtime/fleet` (same `TokenService`/`AuthService`), but requires
+`claims.type === 'PARENT'` (a staff token is rejected identically to no
+token) and has no permission check at all, matching the RBAC-free posture
+of every other parent route. Room membership is resolved from
+`ParentAccessService.getVerifiedChildIds` — the identical service the REST
+side and `/auth/me`'s `linkedChildrenCount` already use — so a parent's
+realtime scope can never drift from their REST-visible scope. There is no
+`@SubscribeMessage` handler on this gateway, so there is no mechanism at
+all for a client to join, request, or discover any room, including another
+child's room or a staff fleet/bus room. See
+[ADR 0015](adr/0015-parent-transport-tracking.md).
 
 ## 6. Testing Requirements
 

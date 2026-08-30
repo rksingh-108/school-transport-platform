@@ -11,5 +11,10 @@ import { DeviceAuthGuard } from './guards/device-auth.guard';
   imports: [AuthModule],
   controllers: [GpsController, GpsIngestionController, GpsSimulatorController],
   providers: [GpsService, GpsGateway, DeviceAuthGuard],
+  // GpsService: consumed by ParentTransportService (Phase 1 Step 8) to
+  // resolve a verified child's bus location. GpsGateway: consumed by
+  // ParentGateway (same phase) via `onLocationUpdate`, so it can derive
+  // parent-safe events without duplicating the current-location pipeline.
+  exports: [GpsService, GpsGateway],
 })
 export class GpsModule {}
