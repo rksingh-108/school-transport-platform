@@ -42,26 +42,39 @@ export class PinoLoggerService implements LoggerService {
   }
 
   log(message: unknown, context?: string) {
-    this.logger.info({ context }, this.stringify(message));
+    this.emit('info', message, context);
   }
 
   error(message: unknown, trace?: string, context?: string) {
-    this.logger.error({ context, trace }, this.stringify(message));
+    this.emit('error', message, context, trace);
   }
 
   warn(message: unknown, context?: string) {
-    this.logger.warn({ context }, this.stringify(message));
+    this.emit('warn', message, context);
   }
 
   debug(message: unknown, context?: string) {
-    this.logger.debug({ context }, this.stringify(message));
+    this.emit('debug', message, context);
   }
 
   verbose(message: unknown, context?: string) {
-    this.logger.trace({ context }, this.stringify(message));
+    this.emit('trace', message, context);
   }
 
-  private stringify(message: unknown): string {
-    return typeof message === 'string' ? message : JSON.stringify(message);
+  /**
+   * A non-string `message` is spread into the log record's own top-level
+   * fields (not pre-serialized into the `msg` string) — pino's `redact`
+   * config above only inspects the structured record, never substrings
+   * inside an already-stringified message. Serializing first (the previous
+   * implementation) silently defeated every redact path for any call site
+   * that ever logs an object; this keeps that safety net actually able to
+   * fire if one does.
+   */
+  private emit(level: 'info' | 'warn' | 'error' | 'debug' | 'trace', message: unknown, context?: string, trace?: string): void {
+    if (typeof message === 'string') {
+      this.logger[level]({ context, trace }, message);
+    } else {
+      this.logger[level]({ ...(message as object), context, trace }, '');
+    }
   }
 }

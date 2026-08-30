@@ -20,7 +20,11 @@ const booleanFromEnv = (defaultValue: boolean) =>
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(3001),
-  CORS_ORIGIN: z.string().default('http://localhost:3000'),
+  // No default (Phase 1 Step 10 hardening): a silently-applied
+  // 'http://localhost:3000' fallback would be wrong in production and
+  // wouldn't be caught by the wildcard-only check below — every
+  // environment (including CI) must set this explicitly.
+  CORS_ORIGIN: z.string().min(1, 'CORS_ORIGIN is required'),
 
   // Restricted, RLS-subject connection — see docs/database.md#5-row-level-security
   // and docs/adr/0002-multi-tenancy-strategy.md. The API never connects with the
@@ -88,11 +92,56 @@ export const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/**
+ * Values that are only ever safe in development/CI, never production —
+ * lifted straight from `.env.example`/`.github/workflows/ci.yml` so this
+ * list can never silently drift from what those files actually contain.
+ * Phase 1 Step 10 hardening: `NODE_ENV=production` starting with any of
+ * these must fail fast at boot, not silently run insecurely. This is a
+ * deliberately narrow, exact-match blocklist (not a broad heuristic like
+ * "contains localhost") — a false positive here would block a legitimate
+ * production deploy, which is worse than the narrow gap it might miss.
+ */
+const KNOWN_DEV_ONLY_SECRETS = new Set([
+  'dev_only_staff_secret_change_me_to_something_random_and_long',
+  'dev_only_parent_secret_change_me_to_something_random_and_long',
+  'ci_only_staff_secret_at_least_32_characters_long',
+  'ci_only_parent_secret_at_least_32_characters_long',
+]);
+const KNOWN_DEV_ONLY_STORAGE_CREDENTIALS = new Set(['minioadmin']);
+
 export function validateEnv(config: Record<string, unknown>): Env {
   const result = envSchema.safeParse(config);
   if (!result.success) {
     const issues = result.error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`);
     throw new Error(`Invalid environment configuration:\n${issues.join('\n')}`);
   }
-  return result.data;
+
+  const env = result.data;
+  if (env.NODE_ENV === 'production') {
+    const problems: string[] = [];
+    if (env.CORS_ORIGIN === '*') {
+      problems.push('CORS_ORIGIN must not be "*" in production (also invalid together with credentialed CORS).');
+    }
+    if (KNOWN_DEV_ONLY_SECRETS.has(env.JWT_STAFF_SECRET)) {
+      problems.push('JWT_STAFF_SECRET is the well-known development/CI placeholder value — set a real secret.');
+    }
+    if (KNOWN_DEV_ONLY_SECRETS.has(env.JWT_PARENT_SECRET)) {
+      problems.push('JWT_PARENT_SECRET is the well-known development/CI placeholder value — set a real secret.');
+    }
+    if (env.JWT_STAFF_SECRET === env.JWT_PARENT_SECRET) {
+      problems.push('JWT_STAFF_SECRET and JWT_PARENT_SECRET must be different (docs/security.md §1).');
+    }
+    if (KNOWN_DEV_ONLY_STORAGE_CREDENTIALS.has(env.STORAGE_ACCESS_KEY)) {
+      problems.push('STORAGE_ACCESS_KEY is the well-known MinIO development default — set a real credential.');
+    }
+    if (KNOWN_DEV_ONLY_STORAGE_CREDENTIALS.has(env.STORAGE_SECRET_KEY)) {
+      problems.push('STORAGE_SECRET_KEY is the well-known MinIO development default — set a real credential.');
+    }
+    if (problems.length > 0) {
+      throw new Error(`Refusing to start with NODE_ENV=production using unsafe configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+    }
+  }
+
+  return env;
 }

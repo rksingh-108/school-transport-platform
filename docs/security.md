@@ -582,3 +582,42 @@ re-verification described above.
 - Insider over-access (staff browsing beyond their remit) → permission matrix +
   audit logging of all read access to `students`, `ai_events`, `incidents`, and
   `files` of type `INCIDENT_CLIP`.
+
+## 8. Rate Limiting
+
+Reviewed and consolidated in Phase 1 Step 10 (previously scattered across
+per-phase comments only, with a dangling cross-reference to this section
+from `auth.controller.ts` before it existed). Two layers:
+
+1. **A conservative global default** — `ThrottlerModule.forRoot([{ name:
+   'default', ttl: 60_000, limit: 100 }])` (`app.module.ts`), keyed by IP,
+   applied to every route via the global `ThrottlerGuard`. In-memory
+   storage (single API instance; not Redis-backed) — sufficient at this
+   phase's scale, matching the "no premature horizontal-scaling
+   infrastructure" posture already documented for the realtime gateways
+   (ADR 0014).
+2. **Tighter per-route overrides** for endpoints that are meaningfully
+   abusable, applied via `@Throttle(...)`:
+   - Staff/parent login, password-reset request/confirm: `5/min`
+     (`SENSITIVE_AUTH_THROTTLE`, `auth.controller.ts`) — credential-guessing
+     and reset-spam resistance. Invitation acceptance
+     (`invitations.controller.ts`) uses the same `5/min` value, defined
+     locally rather than importing the auth module's constant.
+   - Refresh-token redemption: `20/min` (`REFRESH_THROTTLE`) — looser than
+     login since a legitimate client refreshes routinely (roughly once per
+     access-token lifetime), but still bounded.
+   - GPS ingestion (`POST /telemetry/gps`): configurable via
+     `GPS_INGEST_RATE_LIMIT_PER_MINUTE` (default 120/min), read directly
+     from `process.env` at module-load time since `@Throttle`'s metadata
+     is resolved before Nest's DI container exists (same constraint as
+     `@WebSocketGateway`'s CORS option — see ADR 0014). Keyed by IP, not
+     device identity — a real limitation if multiple devices share one
+     NAT/IP, accepted for this phase and noted for revisit with real
+     fleet traffic data.
+
+Device credential rotation, notification read/mark-read, and other
+staff-authenticated management actions rely on the global default only —
+they already require a valid session and (for credential rotation)
+`buses.manage`, so the abuse surface is materially smaller than an
+unauthenticated endpoint; a dedicated tighter limit was not judged
+necessary and would be over-engineering without an observed need.

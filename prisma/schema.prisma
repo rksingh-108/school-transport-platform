@@ -798,6 +798,15 @@ model TripStudent {
   updatedAt         DateTime          @updatedAt @map("updated_at")
 
   school           School            @relation(fields: [schoolId], references: [id])
+  // onDelete: Cascade here is theoretical, not a live risk — no endpoint
+  // ever hard-deletes a Trip (TripsService only transitions status; see
+  // docs/database.md's Trip section). It's also structurally safe even if
+  // something did: AttendanceEvent.tripStudentId has no onDelete clause
+  // (Prisma/Postgres default = restrict), so any TripStudent with
+  // attendance history blocks this cascade from ever completing — a Trip
+  // with real boarding/drop-off history cannot be hard-deleted without
+  // first, deliberately, destroying that history's own referencing rows.
+  // Reviewed and confirmed deliberate during Phase 1 Step 10 hardening.
   trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
   student          Student           @relation(fields: [studentId], references: [id])
   pickupTripStop   TripStop?         @relation("TripStudentPickup", fields: [pickupTripStopId], references: [id], onDelete: SetNull)

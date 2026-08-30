@@ -7,6 +7,10 @@ on:
 
 env:
   NODE_ENV: test
+  # Required, no schema default as of Phase 1 Step 10 (a silent
+  # 'localhost' fallback would be wrong in production) — every environment
+  # must set it explicitly, CI included.
+  CORS_ORIGIN: http://localhost:3000
   # Privileged connection (Prisma CLI: migrate/seed) — the CI runner's own
   # postgres service, not exposed to the app at runtime.
   DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_transport?schema=public

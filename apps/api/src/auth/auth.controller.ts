@@ -38,7 +38,7 @@ const COOKIE_PATH = '/api/v1/auth';
 
 // Tighter than the app-wide default (100/min) for endpoints that are
 // meaningfully abusable — credential guessing, refresh-token grinding,
-// password-reset spam. See docs/security.md#13-rate-limiting. Tuned to not
+// password-reset spam. See docs/security.md#8-rate-limiting. Tuned to not
 // block a school's normal staff logging in each morning; revisit with real
 // traffic data before launch.
 const SENSITIVE_AUTH_THROTTLE = { default: { limit: 5, ttl: 60_000 } };

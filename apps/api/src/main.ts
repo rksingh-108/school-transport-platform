@@ -15,6 +15,12 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService<Env, true>);
 
+  // Lets Postgres/Redis connections (PrismaService/RedisService's
+  // onModuleDestroy) close cleanly on SIGTERM/SIGINT — required for a
+  // container orchestrator's graceful-shutdown window to actually work,
+  // rather than the process being hard-killed with connections still open.
+  app.enableShutdownHooks();
+
   app.use(helmet());
   app.use(cookieParser());
   app.enableCors({ origin: configService.get('CORS_ORIGIN', { infer: true }), credentials: true });

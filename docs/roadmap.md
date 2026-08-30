@@ -164,6 +164,27 @@ surface):
     [authentication.md](authentication.md), [authorization.md](authorization.md),
     [gps.md](gps.md), [notifications.md](notifications.md) written against the
     as-built system (not speculative).
+18. **Production hardening (Phase 1's final step)**. **Done** — an audit of
+    everything built in Steps 1–9 against the docs/ADRs/schema, not a new
+    feature. See [ADR 0017](adr/0017-production-hardening.md) for the full
+    list of genuine gaps found and fixed: production-only config validation
+    (rejects known dev/CI secrets, wildcard CORS, default MinIO credentials
+    when `NODE_ENV=production`), a required (no-longer-defaulted)
+    `CORS_ORIGIN`, a structured-logging redaction bug (object log messages
+    bypassed `redact` entirely), a missing graceful-shutdown hook, a
+    previously-untested GPS dev-simulator production lockout, a dangling
+    doc cross-reference plus a genuinely-missing Rate Limiting section in
+    [security.md](security.md), and a new
+    [deployment.md](deployment.md) checklist (explicit about what's *not*
+    yet built: automated backups, TLS termination, a production
+    Dockerfile, a monitoring stack). Everything else audited — auth
+    hardening, RBAC, tenant isolation/RLS, IDOR coverage, state machines,
+    health checks, CORS/Helmet, CI, Docker Compose secrets hygiene — was
+    confirmed already correct from prior steps; ADR 0017 records what was
+    reviewed without needing a change, so this pass isn't mistaken for
+    having skipped review. **PHASE 1 — CORE TRANSPORT PLATFORM COMPLETE.**
+    Explicitly out of scope, deferred to Phase 2: cameras, AI, geofencing,
+    emergency management, safety-event detection.
 
 ## Phase 2 — Operational Safety
 1. Bus hardware integration hardening (real device protocol, MQTT ingestion
