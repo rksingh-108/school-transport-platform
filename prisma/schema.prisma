@@ -681,14 +681,15 @@ model Trip {
   createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt          DateTime   @updatedAt @map("updated_at")
 
-  school       School        @relation(fields: [schoolId], references: [id])
-  route        Route         @relation(fields: [routeId], references: [id])
-  bus          Bus           @relation(fields: [busId], references: [id])
-  driver       Driver        @relation(fields: [driverId], references: [id])
-  attendant    Attendant?    @relation(fields: [attendantId], references: [id])
-  tripStops    TripStop[]
-  tripStudents TripStudent[]
-  gpsPoints    GpsPoint[]
+  school           School            @relation(fields: [schoolId], references: [id])
+  route            Route             @relation(fields: [routeId], references: [id])
+  bus              Bus               @relation(fields: [busId], references: [id])
+  driver           Driver            @relation(fields: [driverId], references: [id])
+  attendant        Attendant?        @relation(fields: [attendantId], references: [id])
+  tripStops        TripStop[]
+  tripStudents     TripStudent[]
+  attendanceEvents AttendanceEvent[]
+  gpsPoints        GpsPoint[]
 
   @@unique([routeId, serviceDate, shift])
   @@index([schoolId, serviceDate])
@@ -724,6 +725,7 @@ model TripStop {
   sourceRouteStop  RouteStop?        @relation(fields: [sourceRouteStopId], references: [id], onDelete: SetNull)
   pickupStudents   TripStudent[]     @relation("TripStudentPickup")
   dropoffStudents  TripStudent[]     @relation("TripStudentDropoff")
+  attendanceEvents AttendanceEvent[]
 
   @@unique([tripId, sequenceNo])
   @@index([schoolId])
@@ -748,7 +750,17 @@ model TripStudent {
   dropoffTripStopId String?           @map("dropoff_trip_stop_id")
   membershipStatus  MembershipStatus  @default(PLANNED) @map("membership_status")
   notes             String?
+  // currentStatus/boardedAt/droppedOffAt are a derived, denormalized
+  // projection for fast reads (the manifest list, one query, no N+1) — only
+  // ever written by AttendanceService in response to an AttendanceEvent
+  // insert, never directly by TripStudentsService. Same rule already
+  // documented for currentStatus in docs/database.md, now actually wired up
+  // in Phase 1 Step 6. Stop names for these are the existing
+  // pickup/dropoff fields above — boarding/drop-off always occur at the
+  // student's own planned stop, so no separate stop columns are needed here.
   currentStatus     TripStudentStatus @default(EXPECTED) @map("current_status")
+  boardedAt         DateTime?         @map("boarded_at")
+  droppedOffAt      DateTime?         @map("dropped_off_at")
   createdAt         DateTime          @default(now()) @map("created_at")
   updatedAt         DateTime          @updatedAt @map("updated_at")
 
@@ -765,23 +777,48 @@ model TripStudent {
   @@map("trip_students")
 }
 
+// Actual boarding/drop-off/absence events — never confused with
+// TripStudent.membershipStatus (planned manifest membership, Step 5) or
+// TripStudent.currentStatus (the derived projection this model feeds).
+// Immutable once written: a correction is a NEW row with `correctsEventId`
+// pointing at the event it corrects, never an update to the original — see
+// docs/adr/0013-attendance-event-model.md.
 model AttendanceEvent {
-  id            String                @id @default(uuid())
-  schoolId      String                @map("school_id")
-  tripStudentId String                @map("trip_student_id")
-  eventType     AttendanceEventType   @map("event_type")
-  source        AttendanceEventSource
-  recordedBy    String?               @map("recorded_by")
-  occurredAt    DateTime              @default(now()) @map("occurred_at")
-  latitude      Float?
-  longitude     Float?
-  metadata      Json?
-  createdAt     DateTime              @default(now()) @map("created_at")
+  id              String                @id @default(uuid())
+  schoolId        String                @map("school_id")
+  tripId          String                @map("trip_id")
+  tripStudentId   String                @map("trip_student_id")
+  // The stop this event is associated with — always derived server-side
+  // from the TripStudent's own pickup/dropoff assignment, never a
+  // client-supplied stop id (see TripsAttendanceService). Null means "the
+  // school itself", same convention as TripStudent's own stop fields.
+  tripStopId      String?               @map("trip_stop_id")
+  eventType       AttendanceEventType   @map("event_type")
+  // MANUAL, in this phase's vocabulary, is represented by the existing
+  // ATTENDANT_APP value (Phase 0's scaffold) — no new enum was introduced
+  // for the same concept under a different name. RFID/QR/CV/SYSTEM remain
+  // reserved and unused, same as Phase 0 left them.
+  source          AttendanceEventSource @default(ATTENDANT_APP)
+  recordedBy      String?               @map("recorded_by")
+  occurredAt      DateTime              @default(now()) @map("occurred_at")
+  // Set only on a correction event — the event this one supersedes for
+  // TripStudent.currentStatus purposes. Never set on a normal event.
+  correctsEventId String?               @map("corrects_event_id")
+  notes           String?
+  latitude        Float?
+  longitude       Float?
+  metadata        Json?
+  createdAt       DateTime              @default(now()) @map("created_at")
 
-  school      School      @relation(fields: [schoolId], references: [id])
-  tripStudent TripStudent @relation(fields: [tripStudentId], references: [id])
-  recorder    User?       @relation("AttendanceEventRecordedBy", fields: [recordedBy], references: [id])
+  school        School            @relation(fields: [schoolId], references: [id])
+  trip          Trip              @relation(fields: [tripId], references: [id])
+  tripStudent   TripStudent       @relation(fields: [tripStudentId], references: [id])
+  tripStop      TripStop?         @relation(fields: [tripStopId], references: [id])
+  recorder      User?             @relation("AttendanceEventRecordedBy", fields: [recordedBy], references: [id])
+  correctsEvent AttendanceEvent?  @relation("AttendanceEventCorrection", fields: [correctsEventId], references: [id])
+  corrections   AttendanceEvent[] @relation("AttendanceEventCorrection")
 
+  @@index([tripId, occurredAt])
   @@index([tripStudentId, occurredAt])
   @@index([schoolId])
   @@map("attendance_events")

@@ -346,6 +346,38 @@ already documented the narrower "own trip start/end" intent for `DRIVER`;
 the seed data had simply drifted from it) — the same kind of gap found and
 fixed for `TRANSPORT_MANAGER`'s fleet visibility in Phase 1 Step 3.
 
+### 5.5 Attendance Authorization
+
+Boarding/drop-off/absence/correction (Phase 1 Step 6) reuse `attendance.read`/
+`attendance.manage` — no new permission was introduced. Per §2.3's matrix
+(unchanged from Phase 0, and already correct — no seed drift this time),
+`SCHOOL_ADMIN`/`TRANSPORT_ADMIN`/`PRINCIPAL` hold `attendance.read` only
+(oversight, not personally recording attendance — a deliberate
+separation-of-duties choice, not a gap), `TRANSPORT_MANAGER` holds
+unscoped `attendance.manage`, and `BUS_ATTENDANT` holds it scoped to "own
+trip only." `DRIVER` holds neither — drivers don't record boarding.
+
+Because `TRANSPORT_MANAGER` and `BUS_ATTENDANT` hold the *identical*
+`attendance.manage` permission string, the permission-level trick used for
+`DRIVER` in §5.4 doesn't distinguish them. Instead, `AttendanceService`
+resolves scope by checking whether the caller has an `Attendant` **profile**
+at all: if so, every action is restricted to trips where
+`trip.attendantId` matches that profile (regardless of which permission
+grant let them reach the endpoint); if not, no restriction applies. See
+[ADR 0013](adr/0013-attendance-event-model.md) for the full reasoning and
+its accepted edge case (someone who is both an attendant profile-holder and
+a `TRANSPORT_MANAGER` is still scoped down).
+
+`attendance.read` was missing from `BUS_ATTENDANT`'s seeded grants — a
+Phase 0 gap (they had `attendance.manage` but not the separate read
+permission the manifest/history endpoints also check) — fixed while
+reviewing existing grants, the same pattern as §5.4's `DRIVER` fix and
+Phase 1 Step 3's `TRANSPORT_MANAGER` fleet-visibility fix.
+
+`recordedBy` on every event is always the authenticated principal's id;
+no request schema in this module has a client-suppliable actor field at
+all, so there is nothing to spoof, by construction.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to

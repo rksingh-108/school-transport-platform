@@ -89,8 +89,8 @@ school-transport-platform/
 │   │   │   │   ├── attendants/
 │   │   │   │   ├── routes/
 │   │   │   │   ├── route-stops/         # named to match bus-devices' convention: sub-resource module named after the owning relationship
-│   │   │   │   ├── trips/               # one NestJS module — TripsController (+ read-only trip-stops) and TripStudentsController (manifest) share it rather than each getting a separate module, since both are tightly coupled to Trip and neither needs independent app-level wiring
-│   │   │   │   ├── attendance/
+│   │   │   │   ├── trips/               # one NestJS module — TripsController (+ read-only trip-stops), TripStudentsController (manifest), and AttendanceController (boarding/drop-off/absence/correction, Phase 1 Step 6) share it rather than each getting a separate module, since all three are tightly coupled to Trip and none needs independent app-level wiring
+│   │   │   │   ├── attendance/          # placeholder — actual implementation lives in trips/ (see above); reserved for a future split if attendance outgrows the shared module
 │   │   │   │   ├── gps/                 # telemetry ingestion + live state
 │   │   │   │   ├── geofencing/          # phase 2
 │   │   │   │   ├── speed-monitoring/    # phase 2

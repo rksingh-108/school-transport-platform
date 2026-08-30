@@ -228,16 +228,37 @@ different route is a different trip, not an edit of this one).
 | POST | `/trips/:id/complete` | `trips.read` (see note) | `IN_PROGRESS` → `COMPLETED` only. Sets `endedAt`. Same driver-or-manage authorization as `/start`. |
 | POST | `/trips/:id/cancel` | `trips.manage` | `{reason}` (required). From `SCHEDULED`/`READY`/`IN_PROGRESS` only (400 if already terminal). |
 | POST | `/trips/:id/no-show` | `trips.manage` | `{reason}` (required). From `SCHEDULED`/`READY` only — never `IN_PROGRESS` (once started, it's not a no-show). |
-| GET | `/trips/:tripId/students` | `trips.read` | The manifest, excluding soft-removed entries. |
+| GET | `/trips/:tripId/students` | `trips.read` | The manifest, excluding soft-removed entries. Since Phase 1 Step 6, each entry also carries `currentStatus`/`boardedAt`/`droppedOffAt` — the derived attendance projection, in the same query (no N+1) — see the Attendance section below. |
 | POST | `/trips/:tripId/students` | `trips.manage` | `{studentId, pickupTripStopId?, dropoffTripStopId?, notes?}` — at least one of pickup/dropoff required; either may be omitted/null to mean "the school itself" (a route's implicit terminus, never modeled as a stop). Any non-null stop id must belong to *this* trip's own `trip_stops` (400 otherwise) — a stop from another trip or the live route is rejected. 400 on a duplicate (non-removed) student; re-adding a previously-removed student revives that same row instead of erroring. |
 | PATCH | `/trips/:tripId/students/:tripStudentId` | `trips.manage` | `{pickupTripStopId?, dropoffTripStopId?, notes?}` — never `membershipStatus` directly (that only changes via add/remove/trip-start). |
 | DELETE | `/trips/:tripId/students/:tripStudentId` | `trips.manage` | Soft-removal only (`membershipStatus: 'REMOVED'`) — never a hard delete, so a trip's historical manifest stays auditable. |
 
 ### Attendance
-| Method | Path | Permission |
-|---|---|---|
-| POST | `/trips/:tripId/students/:studentId/events` | `attendance.manage` (ATTENDANT: own trip only) — body: `{eventType, source, metadata?}` |
-| GET | `/trips/:tripId/students/:studentId/events` | `attendance.read` |
+
+Implemented in Phase 1 Step 6 — `apps/api/src/trips/attendance.{controller,service}.ts`.
+Boarding/drop-off/absence are real fact-log events (`AttendanceEvent`),
+never confused with the Step 5 manifest membership concept — see
+[ADR 0013](adr/0013-attendance-event-model.md). None of these endpoints
+accept a stop id, an actor id, or (except `/correct`) a timestamp from the
+client — the stop is always the student's own planned pickup/dropoff stop,
+the actor is always the authenticated principal, and the time is always
+"now" for normal events.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| POST | `/trips/:tripId/students/:tripStudentId/board` | `attendance.manage` | `{notes?}`. Only while the trip is `IN_PROGRESS`; 400 if already boarded or dropped off. |
+| POST | `/trips/:tripId/students/:tripStudentId/dropoff` | `attendance.manage` | `{notes?}`. Only while `IN_PROGRESS` and currently `BOARDED` — 400 for "drop-off before boarding" or a duplicate. |
+| POST | `/trips/:tripId/students/:tripStudentId/absent` | `attendance.manage` | `{notes?}`. Only from `EXPECTED` (never once boarded/dropped off — use a correction for that), and only while the trip is `SCHEDULED`/`READY`/`IN_PROGRESS`. |
+| POST | `/trips/:tripId/students/:tripStudentId/attendance/:eventId/correct` | `attendance.manage` | `{eventType, occurredAt?, notes?}` — `eventType` is one of `BOARDING_CONFIRMED`/`DROPPED_OFF`/`MARKED_ABSENT`, i.e. the *actual* corrected fact. Creates a new event referencing the one it corrects; the original is never edited. Allowed regardless of trip status. |
+| GET | `/trips/:tripId/students/:tripStudentId/attendance` | `attendance.read` | Full event history, oldest first, including corrections. |
+
+`BUS_ATTENDANT` holds `attendance.manage`/`attendance.read` scoped to "own
+trip only" (§2.3 of security.md) — resolved by the caller's own `Attendant`
+profile against the trip's assigned attendant, not by the permission grant
+alone; see [security.md §5.5](security.md). The enriched
+`GET /trips/:tripId/students` response (Step 5's manifest endpoint) already
+carries `currentStatus`/`boardedAt`/`droppedOffAt` for every entry in the
+same query — no separate "attendance list" endpoint was added.
 
 ### GPS / Tracking
 | Method | Path | Permission |

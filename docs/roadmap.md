@@ -68,8 +68,17 @@ surface):
    into overlapping trips on the same service date. Tests: driver/attendant
    scoped to own trip only — confirmed both in e2e tests and live against
    the running server.
-9. **Attendance** (event-sourced state machine). Tests: full status-transition
-   matrix, correction events preserve history.
+9. **Attendance**. **Done** — `AttendanceService`/`AttendanceController`
+   (housed in the existing `trips/` module). Immutable `AttendanceEvent` log
+   (`BOARDING_CONFIRMED`/`DROPPED_OFF`/`MARKED_ABSENT`) with
+   `TripStudent.currentStatus`/`boardedAt`/`droppedOffAt` as a derived
+   projection; corrections are new events (`correctsEventId`), never edits.
+   See [ADR 0013](adr/0013-attendance-event-model.md) for the event model,
+   the correction-as-new-row design, and the profile-based own-trip
+   scoping mechanism reused for `BUS_ATTENDANT`. Tests: full boarding/
+   drop-off/absence/correction transition matrix, correction events
+   preserve history, cross-tenant IDOR, RLS enforcement — confirmed both
+   in e2e tests and live against the running server.
 10. **GPS ingestion (HTTP, MVP) + live tracking module** + `/ws/tracking`. Tests:
     parent receives only own-child's-bus updates; staff receives school-wide.
 11. **Notifications** (in-app + one real channel, e.g. push via a provider adapter;

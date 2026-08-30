@@ -46,6 +46,16 @@ requirements this document does not attempt to interpret authoritatively.
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
 
+**Implementation status (Phase 1 Step 6):** the "Attendance/boarding events"
+row above is only partially built. `AttendanceEvent` rows (boarding/
+drop-off/absence/correction, `MANUAL` source only — no device/QR/RFID/AI
+source is wired up yet) are real and staff can read/write them per RBAC.
+**"parent sees own child's events" does not exist yet** — there is no
+parent-facing attendance endpoint at all in this phase; the table's parent
+column describes the eventual target, not current behavior. No retention
+job runs yet either (tracked in [roadmap.md](roadmap.md)); events are kept
+indefinitely for now, same as the trip manifest row above.
+
 **Implementation status (Phase 1 Step 2):** the student profile and parent
 profile rows above are now real, not just planned — `admissionNumber`,
 `fullName`, `dateOfBirth`, `grade`, `section` for students (no photo field yet;

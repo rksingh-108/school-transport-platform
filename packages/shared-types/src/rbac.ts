@@ -198,7 +198,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
   // while reviewing existing grants, the same kind of gap found and fixed
   // for TRANSPORT_MANAGER in Phase 1 Step 3.)
   DRIVER: ['trips.read', 'gps.read', 'emergency.create'],
-  BUS_ATTENDANT: ['trips.read', 'attendance.manage', 'gps.read', 'emergency.create'],
+  // `attendance.read` added in Phase 1 Step 6 while reviewing existing
+  // grants — an attendant who manages attendance obviously needs to read
+  // the manifest/current state they're managing too (§2.3's matrix already
+  // documents "own trip only" for this role; the seed had simply omitted
+  // the read grant that scoping depends on).
+  BUS_ATTENDANT: ['trips.read', 'attendance.read', 'attendance.manage', 'gps.read', 'emergency.create'],
   SECURITY: [
     'gps.read',
     'camera.read',

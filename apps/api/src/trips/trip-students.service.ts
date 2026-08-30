@@ -20,6 +20,9 @@ type TripStudentRow = {
   dropoffTripStopId: string | null;
   membershipStatus: string;
   notes: string | null;
+  currentStatus: string;
+  boardedAt: Date | null;
+  droppedOffAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   student: { fullName: string; admissionNumber: string };
@@ -177,6 +180,9 @@ export class TripStudentsService {
       dropoffStopName: row.dropoffTripStop?.name ?? null,
       membershipStatus: row.membershipStatus as TripStudentDto['membershipStatus'],
       notes: row.notes,
+      currentStatus: row.currentStatus as TripStudentDto['currentStatus'],
+      boardedAt: row.boardedAt?.toISOString() ?? null,
+      droppedOffAt: row.droppedOffAt?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

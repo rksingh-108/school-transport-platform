@@ -209,7 +209,13 @@ export interface TripStopDto {
   createdAt: string;
 }
 
-/** Manifest membership — never inherited from the route, always an explicit row. */
+/**
+ * Manifest membership — never inherited from the route, always an explicit
+ * row. `currentStatus`/`boardedAt`/`droppedOffAt` are a derived projection
+ * fed by AttendanceEvent (Phase 1 Step 6) — the manifest list is the one
+ * efficient read for "who's on this trip and what's their current
+ * attendance state," with no N+1 needed to also show it.
+ */
 export interface TripStudentDto {
   id: string;
   tripId: string;
@@ -222,6 +228,32 @@ export interface TripStudentDto {
   dropoffStopName: string | null;
   membershipStatus: 'PLANNED' | 'ACTIVE' | 'REMOVED';
   notes: string | null;
+  currentStatus: 'EXPECTED' | 'BOARDED' | 'ABSENT' | 'DROPPED_OFF';
+  /** Always at `pickupStopName` when set — boarding is always recorded at the student's own planned pickup stop. */
+  boardedAt: string | null;
+  /** Always at `dropoffStopName` when set — drop-off is always recorded at the student's own planned dropoff stop. */
+  droppedOffAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * One immutable attendance event. Never returned to parents (no parent
+ * endpoint reads this model at all yet — see docs/security.md). `notes`,
+ * `recordedByName`, and `correctsEventId` are staff-only detail, omitted
+ * entirely rather than nulled if a parent-safe DTO is ever built later.
+ */
+export interface AttendanceEventDto {
+  id: string;
+  tripId: string;
+  tripStudentId: string;
+  eventType: 'BOARDING_CONFIRMED' | 'MARKED_ABSENT' | 'DROPPED_OFF';
+  source: 'ATTENDANT_APP';
+  tripStopId: string | null;
+  tripStopName: string | null;
+  occurredAt: string;
+  recordedByName: string | null;
+  correctsEventId: string | null;
+  notes: string | null;
+  createdAt: string;
 }

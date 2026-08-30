@@ -62,7 +62,11 @@ export type ManagementAuditAction =
   | 'TRIP_NO_SHOW'
   | 'TRIP_STUDENT_ADDED'
   | 'TRIP_STUDENT_UPDATED'
-  | 'TRIP_STUDENT_REMOVED';
+  | 'TRIP_STUDENT_REMOVED'
+  | 'STUDENT_BOARDED'
+  | 'STUDENT_DROPPED_OFF'
+  | 'STUDENT_MARKED_ABSENT'
+  | 'ATTENDANCE_CORRECTED';
 
 @Injectable()
 export class AuditService {

@@ -446,6 +446,10 @@ async function seedDemoSchool() {
   // each field/status means. Realistic fake data across today/yesterday so
   // the dashboard and cross-tenant security tests both have something to
   // exercise regardless of when the seed actually runs.
+  // IN_PROGRESS (not SCHEDULED) so attendance actions are immediately
+  // testable without first clicking through ready()/start() — one student
+  // already boarded (to exercise drop-off/correction), one still EXPECTED
+  // (to exercise board/absent).
   const morningTripToday = await createSeedTrip({
     schoolId: school.id,
     routeId: route.id,
@@ -456,27 +460,42 @@ async function seedDemoSchool() {
     shift: 'MORNING_PICKUP',
     scheduledStartTime: '07:00',
     scheduledEndTime: '08:00',
-    status: 'SCHEDULED',
+    status: 'IN_PROGRESS',
+    startedAt: new Date(),
   });
-  await prisma.tripStudent.createMany({
-    data: [
-      {
-        schoolId: school.id,
-        tripId: morningTripToday.id,
-        studentId: student.id,
-        pickupTripStopId: morningTripToday.tripStops[0]?.id,
-        dropoffTripStopId: null,
-      },
-      {
-        schoolId: school.id,
-        tripId: morningTripToday.id,
-        studentId: student2.id,
-        pickupTripStopId: morningTripToday.tripStops[1]?.id ?? morningTripToday.tripStops[0]?.id,
-        dropoffTripStopId: null,
-      },
-    ],
-    skipDuplicates: true,
+  const morningEntry1 = await prisma.tripStudent.create({
+    data: {
+      schoolId: school.id,
+      tripId: morningTripToday.id,
+      studentId: student.id,
+      pickupTripStopId: morningTripToday.tripStops[0]?.id,
+      dropoffTripStopId: null,
+      membershipStatus: 'ACTIVE',
+    },
   });
+  await prisma.tripStudent.create({
+    data: {
+      schoolId: school.id,
+      tripId: morningTripToday.id,
+      studentId: student2.id,
+      pickupTripStopId: morningTripToday.tripStops[1]?.id ?? morningTripToday.tripStops[0]?.id,
+      dropoffTripStopId: null,
+      membershipStatus: 'ACTIVE',
+    },
+  });
+  const boardedAt = new Date();
+  await prisma.attendanceEvent.create({
+    data: {
+      schoolId: school.id,
+      tripId: morningTripToday.id,
+      tripStudentId: morningEntry1.id,
+      tripStopId: morningEntry1.pickupTripStopId,
+      eventType: 'BOARDING_CONFIRMED',
+      recordedBy: (await prisma.user.findFirstOrThrow({ where: { schoolId: school.id, email: 'attendant@demo-school.example' } })).id,
+      occurredAt: boardedAt,
+    },
+  });
+  await prisma.tripStudent.update({ where: { id: morningEntry1.id }, data: { currentStatus: 'BOARDED', boardedAt } });
 
   const afternoonTripToday = await createSeedTrip({
     schoolId: school.id,
@@ -503,7 +522,7 @@ async function seedDemoSchool() {
     skipDuplicates: true,
   });
 
-  await createSeedTrip({
+  const yesterdayTrip = await createSeedTrip({
     schoolId: school.id,
     routeId: route.id,
     busId: bus.id,
@@ -516,6 +535,59 @@ async function seedDemoSchool() {
     status: 'COMPLETED',
     startedAt: new Date(`${relativeDate(-1)}T07:02:00Z`),
     endedAt: new Date(`${relativeDate(-1)}T08:05:00Z`),
+  });
+  // A completed trip with a full, already-processed attendance history —
+  // including one correction, to show that path exists too.
+  const yesterdayEntry = await prisma.tripStudent.create({
+    data: {
+      schoolId: school.id,
+      tripId: yesterdayTrip.id,
+      studentId: student.id,
+      pickupTripStopId: yesterdayTrip.tripStops[0]?.id,
+      dropoffTripStopId: null,
+      membershipStatus: 'ACTIVE',
+    },
+  });
+  const attendantUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: school.id, email: 'attendant@demo-school.example' } })).id;
+  const wrongAbsentAt = new Date(`${relativeDate(-1)}T07:03:00Z`);
+  const correctedBoardAt = new Date(`${relativeDate(-1)}T07:06:00Z`);
+  const droppedOffAt = new Date(`${relativeDate(-1)}T08:02:00Z`);
+  const originalAbsentEvent = await prisma.attendanceEvent.create({
+    data: {
+      schoolId: school.id,
+      tripId: yesterdayTrip.id,
+      tripStudentId: yesterdayEntry.id,
+      eventType: 'MARKED_ABSENT',
+      recordedBy: attendantUserId,
+      occurredAt: wrongAbsentAt,
+    },
+  });
+  await prisma.attendanceEvent.create({
+    data: {
+      schoolId: school.id,
+      tripId: yesterdayTrip.id,
+      tripStudentId: yesterdayEntry.id,
+      tripStopId: yesterdayEntry.pickupTripStopId,
+      eventType: 'BOARDING_CONFIRMED',
+      recordedBy: attendantUserId,
+      occurredAt: correctedBoardAt,
+      correctsEventId: originalAbsentEvent.id,
+      notes: 'Marked absent by mistake — student had boarded.',
+    },
+  });
+  await prisma.attendanceEvent.create({
+    data: {
+      schoolId: school.id,
+      tripId: yesterdayTrip.id,
+      tripStudentId: yesterdayEntry.id,
+      eventType: 'DROPPED_OFF',
+      recordedBy: attendantUserId,
+      occurredAt: droppedOffAt,
+    },
+  });
+  await prisma.tripStudent.update({
+    where: { id: yesterdayEntry.id },
+    data: { currentStatus: 'DROPPED_OFF', boardedAt: correctedBoardAt, droppedOffAt },
   });
 
   return { school, bus, route, driver, attendant, student, parent };
@@ -702,20 +774,32 @@ async function seedSchoolB() {
     shift: 'MORNING_PICKUP',
     scheduledStartTime: '07:15',
     scheduledEndTime: '08:10',
-    status: 'SCHEDULED',
+    status: 'IN_PROGRESS',
+    startedAt: new Date(),
   });
-  await prisma.tripStudent.createMany({
-    data: [
-      {
-        schoolId: school.id,
-        tripId: morningTripB.id,
-        studentId: studentB1.id,
-        pickupTripStopId: morningTripB.tripStops[0]?.id,
-        dropoffTripStopId: null,
-      },
-    ],
-    skipDuplicates: true,
+  const tripBEntry = await prisma.tripStudent.create({
+    data: {
+      schoolId: school.id,
+      tripId: morningTripB.id,
+      studentId: studentB1.id,
+      pickupTripStopId: morningTripB.tripStops[0]?.id,
+      dropoffTripStopId: null,
+      membershipStatus: 'ACTIVE',
+    },
   });
+  const tripBBoardedAt = new Date();
+  await prisma.attendanceEvent.create({
+    data: {
+      schoolId: school.id,
+      tripId: morningTripB.id,
+      tripStudentId: tripBEntry.id,
+      tripStopId: tripBEntry.pickupTripStopId,
+      eventType: 'BOARDING_CONFIRMED',
+      recordedBy: (await prisma.user.findFirstOrThrow({ where: { schoolId: school.id, email: 'attendant@demo-school-b.example' } })).id,
+      occurredAt: tripBBoardedAt,
+    },
+  });
+  await prisma.tripStudent.update({ where: { id: tripBEntry.id }, data: { currentStatus: 'BOARDED', boardedAt: tripBBoardedAt } });
 
   return { school, students: [studentA1, studentB1], parent, admin };
 }

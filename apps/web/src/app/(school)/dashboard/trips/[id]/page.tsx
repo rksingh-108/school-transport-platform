@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { TripDto, TripStopDto, TripStudentDto, StudentDto } from '@school-transport/shared-types';
+import type { TripDto, TripStopDto, TripStudentDto, StudentDto, AttendanceEventDto } from '@school-transport/shared-types';
 import {
   addTripStudent,
   cancelTrip,
@@ -17,6 +17,7 @@ import {
   updateTrip,
   updateTripStudent,
 } from '@/lib/api/trips';
+import { boardStudent, correctAttendanceEvent, dropOffStudent, getAttendanceHistory, markStudentAbsent } from '@/lib/api/attendance';
 import { listBuses } from '@/lib/api/buses';
 import { listDrivers } from '@/lib/api/drivers';
 import { listAttendants } from '@/lib/api/attendants';
@@ -66,6 +67,7 @@ function TripDetailView({
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('trips.manage');
   const canOperate = canManage || (principal?.type === 'STAFF' && principal.roles.includes('DRIVER'));
+  const canRecordAttendance = principal?.type === 'STAFF' && principal.permissions.includes('attendance.manage');
 
   const [current, setCurrent] = useState(trip);
   const [stops] = useState(initialStops);
@@ -315,7 +317,14 @@ function TripDetailView({
         ))}
       </div>
 
-      <ManifestSection tripId={current.id} stops={stops} manifest={manifest} onManifestChange={setManifest} canManage={canManage} />
+      <ManifestSection
+        tripId={current.id}
+        stops={stops}
+        manifest={manifest}
+        onManifestChange={setManifest}
+        canManage={canManage}
+        canRecordAttendance={canRecordAttendance}
+      />
 
       <ConfirmDialog
         open={confirmCancel}
@@ -352,12 +361,14 @@ function ManifestSection({
   manifest,
   onManifestChange,
   canManage,
+  canRecordAttendance,
 }: {
   tripId: string;
   stops: TripStopDto[];
   manifest: TripStudentDto[];
   onManifestChange: (m: TripStudentDto[]) => void;
   canManage: boolean;
+  canRecordAttendance: boolean;
 }) {
   const [studentQuery, setStudentQuery] = useState('');
   const [studentResults, setStudentResults] = useState<StudentDto[]>([]);
@@ -472,6 +483,14 @@ function ManifestSection({
               )}
             </div>
           </div>
+
+          <AttendanceControls
+            tripId={tripId}
+            entry={entry}
+            canRecordAttendance={canRecordAttendance}
+            onUpdated={(updated) => onManifestChange(manifest.map((m) => (m.id === updated.id ? updated : m)))}
+          />
+
           {canManage && (
             <div className="mt-2 grid grid-cols-2 gap-3">
               <FormField label="Pickup" htmlFor={`pickup-${entry.id}`}>
@@ -578,6 +597,161 @@ function ManifestSection({
         onConfirm={() => confirmRemoveId && onRemove(confirmRemoveId)}
         onCancel={() => setConfirmRemoveId(null)}
       />
+    </div>
+  );
+}
+
+const CORRECTABLE_TYPES: { value: 'BOARDING_CONFIRMED' | 'DROPPED_OFF' | 'MARKED_ABSENT'; label: string }[] = [
+  { value: 'BOARDING_CONFIRMED', label: 'Boarded' },
+  { value: 'DROPPED_OFF', label: 'Dropped off' },
+  { value: 'MARKED_ABSENT', label: 'Absent' },
+];
+
+/**
+ * Boarding/drop-off/absent actions and the correction/history trail for one
+ * manifest entry. Actions are hidden entirely without `attendance.manage`
+ * (UX only — the backend is the real authority, including the "own trip
+ * only" scoping for BUS_ATTENDANT that this component has no way to
+ * predict client-side).
+ */
+function AttendanceControls({
+  tripId,
+  entry,
+  canRecordAttendance,
+  onUpdated,
+}: {
+  tripId: string;
+  entry: TripStudentDto;
+  canRecordAttendance: boolean;
+  onUpdated: (updated: TripStudentDto) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<AttendanceEventDto[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [correctingEventId, setCorrectingEventId] = useState<string | null>(null);
+  const [correctType, setCorrectType] = useState<'BOARDING_CONFIRMED' | 'DROPPED_OFF' | 'MARKED_ABSENT'>('BOARDING_CONFIRMED');
+  const [correctNotes, setCorrectNotes] = useState('');
+  const [correcting, setCorrecting] = useState(false);
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      setHistory(await getAttendanceHistory(tripId, entry.id));
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function toggleHistory() {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next) await loadHistory();
+  }
+
+  async function run(fn: () => Promise<TripStudentDto>) {
+    setError(null);
+    setBusy(true);
+    try {
+      const updated = await fn();
+      onUpdated(updated);
+      if (showHistory) await loadHistory();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Unable to record attendance.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCorrect(eventId: string) {
+    setError(null);
+    setCorrecting(true);
+    try {
+      const updated = await correctAttendanceEvent(tripId, entry.id, eventId, { eventType: correctType, notes: correctNotes || undefined });
+      onUpdated(updated);
+      setCorrectingEventId(null);
+      setCorrectNotes('');
+      await loadHistory();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Unable to correct this event.');
+    } finally {
+      setCorrecting(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={entry.currentStatus} />
+        {entry.boardedAt && <span className="text-xs text-zinc-500">Boarded {new Date(entry.boardedAt).toLocaleTimeString()}</span>}
+        {entry.droppedOffAt && <span className="text-xs text-zinc-500">Dropped off {new Date(entry.droppedOffAt).toLocaleTimeString()}</span>}
+        {canRecordAttendance && entry.currentStatus === 'EXPECTED' && (
+          <>
+            <Button variant="secondary" onClick={() => run(() => boardStudent(tripId, entry.id))} disabled={busy}>
+              Board
+            </Button>
+            <Button variant="secondary" onClick={() => run(() => markStudentAbsent(tripId, entry.id))} disabled={busy}>
+              Mark absent
+            </Button>
+          </>
+        )}
+        {canRecordAttendance && entry.currentStatus === 'BOARDED' && (
+          <Button variant="secondary" onClick={() => run(() => dropOffStudent(tripId, entry.id))} disabled={busy}>
+            Drop off
+          </Button>
+        )}
+        <Button variant="secondary" onClick={toggleHistory}>
+          {showHistory ? 'Hide history' : 'History'}
+        </Button>
+      </div>
+
+      {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {showHistory && (
+        <div className="mt-2 space-y-2 rounded-md bg-zinc-50 p-2 text-xs dark:bg-zinc-900">
+          {historyLoading && <p className="text-zinc-500">Loading…</p>}
+          {!historyLoading && history?.length === 0 && <p className="text-zinc-500">No attendance events yet.</p>}
+          {history?.map((ev) => (
+            <div key={ev.id}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-700 dark:text-zinc-300">
+                  {new Date(ev.occurredAt).toLocaleString()} — {ev.eventType}
+                  {ev.tripStopName ? ` — ${ev.tripStopName}` : ''}
+                  {ev.recordedByName ? ` — ${ev.recordedByName}` : ''}
+                  {ev.correctsEventId ? ' (correction)' : ''}
+                </span>
+                {canRecordAttendance && (
+                  <Button variant="secondary" onClick={() => setCorrectingEventId(correctingEventId === ev.id ? null : ev.id)}>
+                    Correct
+                  </Button>
+                )}
+              </div>
+              {correctingEventId === ev.id && (
+                <div className="mt-1 flex flex-wrap items-end gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+                  <FormField label="Corrected to" htmlFor={`correct-type-${ev.id}`}>
+                    <Select id={`correct-type-${ev.id}`} value={correctType} onChange={(e) => setCorrectType(e.target.value as typeof correctType)}>
+                      {CORRECTABLE_TYPES.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                  <FormField label="Notes" htmlFor={`correct-notes-${ev.id}`}>
+                    <Input id={`correct-notes-${ev.id}`} value={correctNotes} onChange={(e) => setCorrectNotes(e.target.value)} />
+                  </FormField>
+                  <Button onClick={() => onCorrect(ev.id)} loading={correcting}>
+                    Save correction
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

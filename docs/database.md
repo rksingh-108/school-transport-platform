@@ -508,6 +508,8 @@ create table trip_students (
   current_status text not null default 'EXPECTED'
     check (current_status in
       ('EXPECTED','BOARDING_PENDING','BOARDED','ABSENT','DROPPED_OFF','ARRIVED_AT_SCHOOL')),
+  boarded_at timestamptz,
+  dropped_off_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (trip_id, student_id)
@@ -525,36 +527,61 @@ express "must belong to trip X specifically").
 
 `trip_students.membership_status` (Step 5: "is this student on the
 manifest") is written directly by `TripStudentsService`.
-`trip_students.current_status` (Step 6 Attendance's future field: "what
-happened to them") is a **derived, denormalized projection** reserved for
-that module — nothing in Step 5 reads or writes it. Once Step 6 exists, it
-will only ever be written by the attendance service in response to an
-`attendance_events` insert, never directly by a controller, keeping the
-read-optimized column consistent with the append-only event log.
+`trip_students.current_status`/`boarded_at`/`dropped_off_at` (Step 6
+Attendance's concept: "what happened to them") are a **derived,
+denormalized projection**, only ever written by `AttendanceService` in
+response to an `attendance_events` insert, never directly by
+`TripStudentsService` — keeping the read-optimized columns consistent with
+the immutable event log. See [ADR 0013](adr/0013-attendance-event-model.md).
+`BOARDING_PENDING`/`ARRIVED_AT_SCHOOL` remain unused Phase 0 scaffold
+values — only `EXPECTED`/`BOARDED`/`ABSENT`/`DROPPED_OFF` are ever set.
 
 ### `attendance_events`
+
+Implemented in Phase 1 Step 6 (`AttendanceService`). Full design rationale
+— why this is a separate fact log from `TripStudent.membershipStatus`, why
+a correction is a new row rather than an edit, the exact boarding/drop-off/
+absence state-transition rules, and the `BUS_ATTENDANT` own-trip scoping
+mechanism — is in
+[ADR 0013](adr/0013-attendance-event-model.md). Summary below.
+
 ```sql
 create table attendance_events (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
+  trip_id uuid not null references trips(id), -- denormalized for direct trip-scoped queries/indexing
   trip_student_id uuid not null references trip_students(id),
+  trip_stop_id uuid references trip_stops(id), -- always derived server-side from the student's own pickup/dropoff stop; null = "the school"
   event_type text not null
     check (event_type in
       ('BOARDING_CONFIRMED','MARKED_ABSENT','DROPPED_OFF','ARRIVED_AT_SCHOOL','STATUS_CORRECTED')),
-  source text not null check (source in ('ATTENDANT_APP','RFID','QR','CV','SYSTEM')),
-  recorded_by uuid references users(id), -- null for automated sources
-  occurred_at timestamptz not null default now(),
+  source text not null default 'ATTENDANT_APP' check (source in ('ATTENDANT_APP','RFID','QR','CV','SYSTEM')),
+  recorded_by uuid references users(id), -- always the authenticated principal; never client-supplied
+  occurred_at timestamptz not null default now(), -- server time for normal events; caller-specified only via /correct
+  corrects_event_id uuid references attendance_events(id), -- set only on a correction; the event it supersedes
+  notes text,
   latitude double precision,
   longitude double precision,
   metadata jsonb,
   created_at timestamptz not null default now()
 );
+create index on attendance_events (trip_id, occurred_at);
 create index on attendance_events (trip_student_id, occurred_at);
 create index on attendance_events (school_id);
 ```
-Append-only, never updated or deleted. A correction is a new `STATUS_CORRECTED`
-event with `metadata.reason` and `metadata.previous_status`, preserving full history
-per the product requirement to never silently overwrite state.
+
+Immutable — never updated or deleted. `ARRIVED_AT_SCHOOL` and
+`STATUS_CORRECTED` are Phase 0 scaffold values left unused this phase (a
+correction reuses the real corrected type instead — see the ADR); only
+`BOARDING_CONFIRMED`/`MARKED_ABSENT`/`DROPPED_OFF` are written by anything
+in Step 6. `source` is always `ATTENDANT_APP` this phase (this codebase's
+"MANUAL" — no separate enum value was introduced for the same concept
+under a different name); `RFID`/`QR`/`CV`/`SYSTEM` remain reserved for a
+future device/AI integration that does not exist yet.
+
+`TripStudent.currentStatus`/`boardedAt`/`droppedOffAt` are the derived,
+denormalized projection of "the latest event for this student" — see
+`TripStudent`'s entry above and the ADR.
 
 ### `gps_points`
 High-volume, append-only, candidate for partitioning by day/bus once volume warrants

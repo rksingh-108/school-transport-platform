@@ -11,3 +11,4 @@ export * from './devices';
 export * from './routes';
 export * from './stops';
 export * from './trips';
+export * from './attendance';
