@@ -41,6 +41,11 @@ import { ParentChildAccessGuard } from './guards/parent-child-access.guard';
     { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_GUARD, useClass: ParentChildAccessGuard },
   ],
-  exports: [AuthService, RbacService, ParentAccessService],
+  // TokenService, PasswordService, and AUTH_NOTIFICATION_ADAPTER are
+  // exported so InvitationsModule (apps/api/src/invitations) can reuse the
+  // same opaque-token/hash mechanics, password hashing, and notification
+  // boundary used for refresh/reset tokens, rather than reinventing them for
+  // invitations.
+  exports: [AuthService, RbacService, ParentAccessService, TokenService, PasswordService, AUTH_NOTIFICATION_ADAPTER],
 })
 export class AuthModule {}

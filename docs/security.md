@@ -26,6 +26,15 @@ reset resolve a tenant before it's known.
   so the body-delivered-token path described in earlier drafts of this doc is not
   built — only the cookie-based web flow. Revisit if/when a non-browser client
   is actually added.
+- **Onboarding (Phase 1 Step 2)**: both staff and parent accounts are created
+  up front by a school admin with `status: 'INVITED'` and `password_hash: null`,
+  then activated via a single-use, time-limited, hashed opaque token
+  (`invitations.token_hash`, same SHA-256 mechanism as refresh/reset tokens;
+  default TTL `INVITATION_TOKEN_TTL_DAYS=7`) delivered through the same
+  `AuthNotificationAdapter` abstraction used elsewhere (console-logged in dev,
+  never a fake "email sent" success in place of real delivery). Acceptance
+  (`POST /invitations/accept`, public) sets the password and flips status to
+  `ACTIVE` atomically; see [database.md](database.md#invitations).
 - MFA-ready, not implemented: `users.mfa_enabled` + encrypted TOTP secret exist,
   and login returns `{status:'MFA_REQUIRED'}` (issuing no tokens) when set — but
   no TOTP enrollment/verification endpoint exists yet, so no current account can
@@ -69,8 +78,8 @@ reset resolve a tenant before it's known.
 | State | Can log in? | Can refresh an existing session? | Reversible? |
 |---|---|---|---|
 | `ACTIVE` | Yes | Yes | — |
-| `INVITED` | No | No | Yes, once onboarding completes (no invite-acceptance flow exists yet — this state exists so account creation isn't forced to set a password immediately) |
-| `SUSPENDED` | No | No | Yes, by an admin |
+| `INVITED` | No | No | Yes — accepting the invitation (`POST /invitations/accept`) sets a password and flips status to `ACTIVE`; see §1's Onboarding note and [database.md](database.md#invitations) |
+| `SUSPENDED` | No | No | Yes, by an admin (`POST /users/:id/activate` / `POST /users/:id/suspend`) |
 | `DISABLED` | No | No | Not by ordinary admin action (distinguished from `SUSPENDED` for audit/reporting clarity) |
 
 Both login and refresh check `status === 'ACTIVE'` explicitly — anything else is
@@ -81,6 +90,18 @@ that token's *next* use (refresh checks status fresh every time); a still-valid
 §1's note on request-scoped principal re-validation. Shortening the access-token
 TTL further, or adding a token blacklist, would close that residual window if a
 future security review decides ≤15 min isn't tight enough.
+
+### 1.2 School Status (Phase 1 Step 2)
+
+`SchoolStatus` (`ACTIVE | TRIAL | SUSPENDED | INACTIVE`) gates login/refresh at
+the tenant level, independent of individual account status —
+`AuthService.isSchoolOperational()` is checked in `loginStaff`, `loginParent`,
+and `refresh`, so suspending a school immediately blocks **every** user's and
+parent's session regardless of their own `ACTIVE` status. Status changes require
+`platform.schools.manage` (SUPER_ADMIN only) — deliberately separate from
+`schools.update` (routine profile edits a SCHOOL_ADMIN already has), since
+suspending a school is a platform-level lifecycle action, not school
+self-service. See [ADR 0011](adr/0011-school-status-platform-managed.md).
 
 ## 2. Authorization (RBAC + Permissions)
 
@@ -111,7 +132,7 @@ notifications.read, notifications.manage
 reports.read
 audit_logs.read
 device_health.read
-platform.schools.read, platform.schools.create, platform.impersonate_school
+platform.schools.read, platform.schools.create, platform.schools.manage, platform.impersonate_school
 ```
 
 ### 2.2 Enforcement — centralized, not scattered
@@ -139,12 +160,13 @@ platform.schools.read, platform.schools.create, platform.impersonate_school
   optimization if the extra query proves costly at scale.
 - The one resource-scoping check that exists so far — "is this parent verified
   for this specific student" — is `ParentChildAccessGuard` +
-  `@RequireVerifiedChild('studentId')` (see §4). It is not yet applied to any
-  real endpoint (no student-facing routes exist until a later Phase 1 step) but
-  is built, unit- and e2e-tested now so those routes don't have to invent it.
-  Future analogous checks (e.g. "is this trip assigned to this driver") follow
-  the same pattern: a dedicated guard + decorator per relationship, not a
-  generic one-size-fits-all policy function.
+  `@RequireVerifiedChild('studentId')` (see §4). As of Phase 1 Step 2 it has its
+  first real production consumer: `GET /parent/children/:studentId`
+  (`ParentSelfController`) — a parent requesting a sibling's or another
+  family's student ID gets `404`, verified by e2e test. Future analogous checks
+  (e.g. "is this trip assigned to this driver") follow the same pattern: a
+  dedicated guard + decorator per relationship, not a generic one-size-fits-all
+  policy function.
 
 ### 2.3 Default Role → Permission Matrix (MVP scope; Phase 2/3 permissions granted
 when those modules ship)
@@ -203,15 +225,20 @@ child-privacy-sensitivity path in the product):
    namespace (`/parent/*`) that never imports camera/AI/incident services.
 2. **Relationship check**: every parent query resolves `studentId` through a
    `verified = true` row in `parent_students` scoped to the authenticated parent —
-   never a raw `studentId` lookup. **Implemented** as `ParentAccessService`
+   never a raw `studentId` lookup, and never one the parent supplies to create
+   the link themselves. **Implemented** as `ParentAccessService`
    (`apps/api/src/auth/services/parent-access.service.ts`, `getVerifiedChildIds`/
    `isVerifiedChild`) and `ParentChildAccessGuard` +
-   `@RequireVerifiedChild('studentId')` for future route-level use. Failure
-   returns `404`, never `403` — indistinguishable from the student not existing
-   at all, matching §3's cross-tenant 404 convention applied to the parent-child
-   boundary. The first real (if minimal) production use is `/auth/me`'s
-   `linkedChildrenCount` — a count only, never the child records themselves,
-   since no student-facing endpoints exist yet.
+   `@RequireVerifiedChild('studentId')`, now used by
+   `GET /parent/children/:studentId` (§2.2). Failure returns `404`, never
+   `403` — indistinguishable from the student not existing at all, matching
+   §3's cross-tenant 404 convention applied to the parent-child boundary. The
+   link itself is always staff-initiated (`POST /parents/:id/children`,
+   `parents.manage_relationships`) and separately staff-verified
+   (`POST /parent-students/:id/verify`) — a parent can never claim an
+   arbitrary student by supplying an ID, by construction (no such endpoint
+   exists in the parent namespace). `GET /parent/children` (list) and
+   `/auth/me`'s `linkedChildrenCount` both filter to `verified = true` only.
 3. **Field-level shaping**: parent-facing DTOs are hand-written response shapes
    (e.g., `ParentTripStatusDto`) that only ever include fields explicitly meant for
    parents — they are not the internal entity serialized with fields hidden by
@@ -278,6 +305,26 @@ the application in this phase via direct `psql` checks as the actual restricted
 `app_user` role (not the superuser) — see
 [ADR 0010](adr/0010-credential-resolution-rls-bypass.md)'s implementation-
 correction note for why that mattered here specifically.
+
+**Covered as of Phase 1 Step 2** (`apps/api/test/core-domain.e2e-spec.ts`):
+two full schools (A, B) with distinct admins, a driver with no `students.*`
+grants, and multiple students/parents per school, specifically to exercise
+cross-tenant scenarios. Explicit IDOR coverage: `GET`/`PATCH` a School B
+student ID while authenticated as School A → `404`; `GET` a School B parent
+while authenticated as School A → `404`; a `schoolId` field supplied in a
+create/update body can never escape the caller's own tenant (the DTOs
+structurally omit the field, so this is verified by confirming the created
+resource always lands in the caller's tenant, not by trying to smuggle the
+field past validation); `GET /parent/children/:studentId` for a
+different parent's or a sibling's student → `404` via
+`ParentChildAccessGuard`. Also covered: staff invite → accept → activate →
+login end-to-end; the SUPER_ADMIN-only escalation guard on
+`POST /users/:id/roles` and `POST /users/invite` (a SCHOOL_ADMIN attempting to
+grant `SUPER_ADMIN` gets `403`, even to themselves); school-status blocking
+login/refresh for every account under a `SUSPENDED`/`INACTIVE` school; and a
+direct `psql`-as-`app_user` re-verification that `invitations` enforces RLS
+with the platform-admin bypass clause, mirroring the Step 1 RLS
+re-verification described above.
 
 ## 7. Threats Explicitly Considered
 

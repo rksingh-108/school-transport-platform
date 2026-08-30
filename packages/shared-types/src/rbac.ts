@@ -65,6 +65,13 @@ export const PERMISSION_KEYS = [
   'device_health.read',
   'platform.schools.read',
   'platform.schools.create',
+  // Lifecycle/status changes (activate, suspend, deactivate) — deliberately
+  // distinct from `schools.update` (routine profile edits SCHOOL_ADMIN
+  // already has). Suspending/deactivating a school affects whether every one
+  // of its users and parents can authenticate at all (docs/security.md#3-school-status),
+  // which is a platform-level concern, not something a school administers
+  // for itself. See docs/adr/0011-school-status-platform-managed.md.
+  'platform.schools.manage',
   'platform.impersonate_school',
 ] as const;
 
@@ -78,7 +85,12 @@ export type PermissionKey = (typeof PERMISSION_KEYS)[number];
  * be revisited when those modules land — only the enforcing modules do.
  */
 export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly PermissionKey[]>> = {
-  SUPER_ADMIN: ['platform.schools.read', 'platform.schools.create', 'platform.impersonate_school'],
+  SUPER_ADMIN: [
+    'platform.schools.read',
+    'platform.schools.create',
+    'platform.schools.manage',
+    'platform.impersonate_school',
+  ],
   SCHOOL_ADMIN: [
     'schools.read',
     'schools.update',

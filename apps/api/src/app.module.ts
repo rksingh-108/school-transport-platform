@@ -8,6 +8,12 @@ import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
+import { AuditModule } from './common/audit/audit.module';
+import { InvitationsModule } from './invitations/invitations.module';
+import { SchoolsModule } from './schools/schools.module';
+import { UsersModule } from './users/users.module';
+import { StudentsModule } from './students/students.module';
+import { ParentsModule } from './parents/parents.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -21,8 +27,14 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     DatabaseModule,
     RedisModule,
     StorageModule,
+    AuditModule,
     HealthModule,
     AuthModule,
+    InvitationsModule,
+    SchoolsModule,
+    UsersModule,
+    StudentsModule,
+    ParentsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

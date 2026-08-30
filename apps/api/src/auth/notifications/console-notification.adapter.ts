@@ -22,4 +22,17 @@ export class ConsoleNotificationAdapter implements AuthNotificationAdapter {
         `(${params.to.email ?? params.to.phone ?? 'unknown'}). Reset token: ${params.resetToken}`,
     );
   }
+
+  async sendInvitationLink(params: {
+    to: { email?: string | null; phone?: string | null };
+    principalType: 'STAFF' | 'PARENT';
+    fullName: string;
+    invitationToken: string;
+  }): Promise<void> {
+    this.logger.warn(
+      `[DEV-ONLY, NOT REAL DELIVERY] Invitation issued for ${params.principalType} ` +
+        `${params.fullName} (${params.to.email ?? params.to.phone ?? 'unknown'}). ` +
+        `Invitation token: ${params.invitationToken}`,
+    );
+  }
 }

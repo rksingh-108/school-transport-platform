@@ -86,7 +86,7 @@ export class AuthService {
 
     const user = matches[0]!;
 
-    if (user.status !== 'ACTIVE') {
+    if (user.status !== 'ACTIVE' || !(await this.isSchoolOperational(user.schoolId))) {
       await this.failedLoginTracker.recordFailure('STAFF', normalizedEmail);
       await this.auditService.recordInTenant(user.schoolId, {
         actorType: 'USER',
@@ -99,7 +99,7 @@ export class AuthService {
       throw new UnauthorizedException(GENERIC_INVALID_CREDENTIALS);
     }
 
-    if (!(await this.passwordService.verify(user.passwordHash, password))) {
+    if (!user.passwordHash || !(await this.passwordService.verify(user.passwordHash, password))) {
       await this.failedLoginTracker.recordFailure('STAFF', normalizedEmail);
       await this.auditService.recordInTenant(user.schoolId, {
         actorType: 'USER',
@@ -173,7 +173,7 @@ export class AuthService {
 
     const parent = matches[0]!;
 
-    if (parent.status !== 'ACTIVE' || !parent.passwordHash) {
+    if (parent.status !== 'ACTIVE' || !parent.passwordHash || !(await this.isSchoolOperational(parent.schoolId))) {
       await this.failedLoginTracker.recordFailure('PARENT', normalizedPhone);
       await this.auditService.recordInTenant(parent.schoolId, {
         actorType: 'PARENT',
@@ -298,7 +298,7 @@ export class AuthService {
     }
 
     const principal = await this.loadPrincipal(existing.schoolId, existing.principalType, existing.principalId);
-    if (!principal || principal.status !== 'ACTIVE') {
+    if (!principal || principal.status !== 'ACTIVE' || !(await this.isSchoolOperational(existing.schoolId))) {
       await this.prisma.runInTenantContext(existing.schoolId, (tx) =>
         tx.refreshToken.update({
           where: { id: existing.id },
@@ -610,5 +610,18 @@ export class AuthService {
       return this.prisma.runInTenantContext(schoolId, (tx) => tx.user.findUnique({ where: { id } }));
     }
     return this.prisma.runInTenantContext(schoolId, (tx) => tx.parent.findUnique({ where: { id } }));
+  }
+
+  /**
+   * ACTIVE and TRIAL are both operationally normal; SUSPENDED/INACTIVE block
+   * every user and parent of that school from logging in or refreshing,
+   * regardless of their own account status — see
+   * docs/security.md#3-school-status.
+   */
+  private async isSchoolOperational(schoolId: string): Promise<boolean> {
+    const school = await this.prisma.runInTenantContext(schoolId, (tx) =>
+      tx.school.findUnique({ where: { id: schoolId }, select: { status: true } }),
+    );
+    return school?.status === 'ACTIVE' || school?.status === 'TRIAL';
   }
 }

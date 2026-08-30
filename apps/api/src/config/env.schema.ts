@@ -48,6 +48,9 @@ export const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
   PASSWORD_RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+  // Longer than a password reset — an invited staff member or parent may not
+  // check their invite for a few days, unlike a deliberate reset request.
+  INVITATION_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
   // Failed-login protection (docs/security.md#1-authentication) — keyed by
   // the raw submitted identifier, not a resolved account, so the lockout

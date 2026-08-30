@@ -1,8 +1,8 @@
 /**
- * Boundary for delivering auth-related messages (password reset links, and
- * later invite emails/SMS) to a principal. No real email/SMS vendor is wired
- * up yet — see docs/roadmap.md Phase 1 notifications work — but every call
- * site depends on this interface, not a concrete provider, so adding a real
+ * Boundary for delivering auth-related messages (password reset links,
+ * invitation links) to a principal. No real email/SMS vendor is wired up yet
+ * — see docs/roadmap.md Phase 1 notifications work — but every call site
+ * depends on this interface, not a concrete provider, so adding a real
  * provider later touches one file, not every caller.
  */
 export interface AuthNotificationAdapter {
@@ -10,6 +10,13 @@ export interface AuthNotificationAdapter {
     to: { email?: string | null; phone?: string | null };
     principalType: 'STAFF' | 'PARENT';
     resetToken: string;
+  }): Promise<void>;
+
+  sendInvitationLink(params: {
+    to: { email?: string | null; phone?: string | null };
+    principalType: 'STAFF' | 'PARENT';
+    fullName: string;
+    invitationToken: string;
   }): Promise<void>;
 }
 

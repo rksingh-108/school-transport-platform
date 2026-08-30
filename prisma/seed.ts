@@ -231,6 +231,86 @@ async function seedDemoSchool() {
   return { school, bus, route, driver, attendant, student, parent };
 }
 
+/**
+ * A second, deliberately leaner school — exists specifically so tests (and a
+ * developer poking around manually) have a genuine cross-tenant pair: an
+ * admin/staff/parent/students that must NEVER be visible to School A's users,
+ * and vice versa. See docs/security.md#14-tenant-isolation.
+ */
+async function seedSchoolB() {
+  const passwordHash = await argon2.hash(DEV_PASSWORD);
+
+  const school = await prisma.school.upsert({
+    where: { slug: 'demo-school-b' },
+    update: {},
+    create: {
+      name: 'Demo Public School B',
+      slug: 'demo-school-b',
+      contactEmail: 'admin@demo-school-b.example',
+      contactPhone: '+91 90000 00100',
+      address: { line1: '2 Example Avenue', city: 'Mumbai', state: 'Maharashtra', pincode: '400001' },
+      status: 'ACTIVE',
+    },
+  });
+
+  async function makeStaffUser(email: string, fullName: string, roleKey: (typeof ROLE_KEYS)[number]) {
+    const user = await prisma.user.upsert({
+      where: { schoolId_email: { schoolId: school.id, email } },
+      update: {},
+      create: { schoolId: school.id, email, fullName, passwordHash },
+    });
+    const role = await prisma.role.findFirstOrThrow({ where: { key: roleKey, schoolId: null } });
+    await prisma.userRole.upsert({
+      where: { userId_roleId: { userId: user.id, roleId: role.id } },
+      update: {},
+      create: { userId: user.id, roleId: role.id },
+    });
+    return user;
+  }
+
+  const admin = await makeStaffUser('school.admin@demo-school-b.example', 'Karan Mehta (School Admin B, Dev)', 'SCHOOL_ADMIN');
+  await makeStaffUser('transport.manager@demo-school-b.example', 'Neha Joshi (Transport Manager B, Dev)', 'TRANSPORT_MANAGER');
+
+  const studentA1 = await prisma.student.upsert({
+    where: { schoolId_admissionNumber: { schoolId: school.id, admissionNumber: 'DEV-B-0001' } },
+    update: {},
+    create: { schoolId: school.id, admissionNumber: 'DEV-B-0001', fullName: 'Diya Patel (Dev, School B)', grade: '3', section: 'A' },
+  });
+  const studentB1 = await prisma.student.upsert({
+    where: { schoolId_admissionNumber: { schoolId: school.id, admissionNumber: 'DEV-B-0002' } },
+    update: {},
+    create: { schoolId: school.id, admissionNumber: 'DEV-B-0002', fullName: 'Ishaan Gupta (Dev, School B)', grade: '5', section: 'C' },
+  });
+
+  const parent = await prisma.parent.upsert({
+    where: { schoolId_phone: { schoolId: school.id, phone: '+91 90000 00101' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      phone: '+91 90000 00101',
+      email: 'parent@demo-school-b.example',
+      fullName: 'Ritu Gupta (Dev Parent, School B)',
+      passwordHash,
+    },
+  });
+
+  await prisma.parentStudent.upsert({
+    where: { parentId_studentId: { parentId: parent.id, studentId: studentB1.id } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      parentId: parent.id,
+      studentId: studentB1.id,
+      relationship: 'MOTHER',
+      verified: true,
+      verifiedBy: admin.id,
+      verifiedAt: new Date(),
+    },
+  });
+
+  return { school, students: [studentA1, studentB1], parent, admin };
+}
+
 async function main() {
   console.log('Seeding permissions...');
   await seedPermissions();
@@ -238,9 +318,13 @@ async function main() {
   await seedRolesAndGrants();
   console.log('Seeding platform operator tenant...');
   await seedPlatformOperator();
-  console.log('Seeding demo school...');
+  console.log('Seeding demo school (A)...');
   const demo = await seedDemoSchool();
-  console.log(`Done. Demo school: ${demo.school.slug}. Dev login password for every seeded account: ${DEV_PASSWORD}`);
+  console.log('Seeding second demo school (B) for cross-tenant testing...');
+  const demoB = await seedSchoolB();
+  console.log(
+    `Done. Schools: ${demo.school.slug}, ${demoB.school.slug}. Dev login password for every seeded account: ${DEV_PASSWORD}`,
+  );
 }
 
 main()

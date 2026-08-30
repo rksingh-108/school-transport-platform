@@ -67,6 +67,7 @@ describe('Authentication (e2e)', () => {
     sendPasswordResetLink: jest.fn(async (params) => {
       capturedResetToken = params.resetToken;
     }),
+    sendInvitationLink: jest.fn(async () => {}),
   };
 
   // Fixtures

@@ -112,6 +112,11 @@ export class TokenService {
     return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   }
 
+  invitationTokenExpiresAt(): Date {
+    const days = this.config.get('INVITATION_TOKEN_TTL_DAYS', { infer: true });
+    return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  }
+
   passwordResetTokenExpiresAt(): Date {
     const minutes = this.config.get('PASSWORD_RESET_TOKEN_TTL_MINUTES', { infer: true });
     return new Date(Date.now() + minutes * 60 * 1000);

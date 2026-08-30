@@ -37,7 +37,8 @@ it* (per instruction — no speculative microservices).
                         │        NestJS API              │
                         │        (apps/api)              │
                         │  modules: auth, schools, users,│
-                        │  rbac, students, parents, buses│
+                        │  invitations, rbac, students,  │
+                        │  parents, buses                │
                         │  routes, trips, attendance,    │
                         │  gps, notifications, reports,  │
                         │  audit, files, sysconfig        │
@@ -192,6 +193,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `students` | student profile, school linkage | camera/AI data |
 | `parents` | parent profile, auth identity link | student profile fields |
 | `parent-students` | the relationship + verification status | either side's core profile |
+| `invitations` | onboarding token lifecycle (staff + parent, polymorphic) | password/credential storage (still owned by `users`/`parents`) |
 | `buses` / `bus-devices` | vehicle + device inventory | live telemetry (owned by `gps`) |
 | `routes` / `stops` | static route topology | trip execution state |
 | `trips` / `trip-students` | a route's execution instance + per-student manifest | attendance event history (owned by `attendance`) |
@@ -210,12 +212,24 @@ One Next.js app, route-grouped by audience, sharing the design system and auth
 session but with **separate layouts and separately reviewed data-fetching paths**:
 
 - `(school)` — control center, requires a staff role, permission-gated per page/widget.
+  Implemented as of Phase 1 Step 2: a dashboard shell (`/dashboard`) with
+  permission-filtered nav, and students/staff/parents list+detail+create screens
+  with role management, invite, suspend/activate, and archive actions.
 - `(parent)` — deliberately minimal, only ever calls parent-safe endpoints
   (`/api/v1/parent/...`), never the staff endpoints, even if the logged-in user's
   token would technically be rejected by the backend anyway (defense in depth: the
-  frontend for parents should not even *reference* staff endpoints).
+  frontend for parents should not even *reference* staff endpoints). Implemented
+  as of Phase 1 Step 2: a single `/parent` profile + linked-children page — no
+  camera/AI/incident/other-student surface exists in this route group at all.
 - `(driver)` / `(attendant)` — mobile-first, minimal-chrome views for in-motion use.
-- `(auth)` — login, MFA, password reset.
+  Not built yet (no driver/attendant-facing feature exists before the trips/
+  attendance phase).
+- Login (`/login/staff`, `/login/parent`) and `/accept-invitation` are top-level
+  routes outside any audience group, since they run before a session exists.
+  Session state is a React Context (`AuthProvider`) backed by an in-memory access
+  token (never `localStorage`) with automatic silent-refresh-on-401 via the
+  shared API client — not a route group of their own, since MFA/password-reset
+  pages don't exist yet.
 
 Driver/attendant/parent surfaces are built responsive-first in the Next.js app for
 MVP (installable PWA); native mobile wrapping is a later, non-architectural decision.

@@ -45,6 +45,21 @@ requirements this document does not attempt to interpret authoritatively.
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
 
+**Implementation status (Phase 1 Step 2):** the student profile and parent
+profile rows above are now real, not just planned — `admissionNumber`,
+`fullName`, `dateOfBirth`, `grade`, `section` for students (no photo field yet;
+`photo_file_id` remains a Phase 2 addition once file storage is wired to a
+real upload flow) and `phone`, `fullName`, `email` for parents. The
+parent-student relationship itself carries a privacy-relevant state: a link is
+`unverified` (created by staff, e.g. from an admission form) or `verified`
+(staff-confirmed) — **only verified links are ever exposed to the parent**
+(`GET /parent/children`, `GET /parent/children/:studentId`); an unverified
+link grants no read access at all, so a data-entry mistake linking the wrong
+parent cannot leak a child's name/grade before a human confirms it. Retention
+jobs, the compliance checklist, and the export/deletion operations below
+remain unbuilt (tracked in [roadmap.md](roadmap.md)) — Phase 1 Step 2 built
+the data model and the access boundary around it, not the lifecycle tooling.
+
 ## 3. Parent Access Boundary (privacy view of the security control)
 
 This restates the boundary defined in

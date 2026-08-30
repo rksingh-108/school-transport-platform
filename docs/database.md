@@ -46,6 +46,7 @@ attendants 1───* trips (assigned)
 trips    1───* trip_students ───1 students
 trips    1───* attendance_events ───1 trip_students
 buses    1───* gps_points
+schools 1───* invitations (polymorphic: staff or parent principal)
 users    1───1 roles (via user_roles, many-to-many for future flexibility)
 roles    *───* permissions (via role_permissions)
 (all)    *───* audit_logs (polymorphic actor/subject reference)
@@ -60,7 +61,7 @@ create table schools (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text not null unique,
-  status text not null default 'ACTIVE' check (status in ('ACTIVE','SUSPENDED','TRIAL')),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','TRIAL','SUSPENDED','INACTIVE')),
   address jsonb,
   contact_email citext not null,
   contact_phone text,
@@ -70,6 +71,15 @@ create table schools (
   deleted_at timestamptz
 );
 ```
+`status` semantics (Phase 1 Step 2, [ADR 0011](adr/0011-school-status-platform-managed.md)):
+`ACTIVE`/`TRIAL` are operational — every user's and parent's login/refresh works
+normally, subject to their own account status. `SUSPENDED`/`INACTIVE` block **all**
+logins and refreshes for the school regardless of individual account status
+(`AuthService.isSchoolOperational()`), checked on every `loginStaff`/`loginParent`/
+`refresh` call. Status changes are platform-managed
+(`platform.schools.manage`, SUPER_ADMIN only) — deliberately separate from
+`schools.update` (routine profile edits, SCHOOL_ADMIN), since suspending a school
+is a platform-level action, not school self-service.
 
 ### `users`
 Staff-side identities (school admin, transport roles, principal, security). Drivers
@@ -83,9 +93,9 @@ create table users (
   school_id uuid not null references schools(id),
   email citext not null,
   phone text,
-  password_hash text not null,
+  password_hash text, -- nullable: null until an INVITED account accepts its invitation
   full_name text not null,
-  status text not null default 'ACTIVE' check (status in ('ACTIVE','DISABLED')),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INVITED','SUSPENDED','DISABLED')),
   mfa_enabled boolean not null default false,
   mfa_secret_encrypted text,
   last_login_at timestamptz,
@@ -160,9 +170,9 @@ create table parents (
   school_id uuid not null references schools(id), -- primary/home school context
   email citext,
   phone text not null,
-  password_hash text,
+  password_hash text, -- nullable: null until an INVITED account accepts its invitation
   full_name text not null,
-  status text not null default 'ACTIVE' check (status in ('ACTIVE','DISABLED')),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INVITED','SUSPENDED','DISABLED')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
@@ -193,6 +203,41 @@ create index on parent_students (student_id);
 ```
 `verified = false` rows grant no access — a school staff member must confirm the
 relationship (prevents a parent claiming an arbitrary admission number at signup).
+As of Phase 1 Step 2, the link itself is always staff-initiated
+(`POST /parents/:id/children`, `parents.manage_relationships`) rather than
+parent self-service — there is no endpoint where a parent supplies a `studentId`
+to link themselves; verification is a separate staff action
+(`POST /parent-students/:id/verify`).
+
+### `invitations`
+Backs the staff and parent onboarding flow (Phase 1 Step 2) — a single polymorphic
+table shared by both audiences via `principal_type`/`principal_id`, avoiding a
+duplicated token/expiry table per audience.
+```sql
+create table invitations (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  principal_type text not null check (principal_type in ('STAFF','PARENT')),
+  principal_id uuid not null, -- users.id or parents.id, per principal_type
+  token_hash text not null unique, -- sha-256 of the opaque token; same scheme as refresh/reset tokens
+  invited_by uuid not null references users(id),
+  expires_at timestamptz not null, -- default INVITATION_TOKEN_TTL_DAYS (7) from issuance
+  accepted_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (principal_type, principal_id)
+);
+create index on invitations (school_id);
+```
+The `unique (principal_type, principal_id)` constraint means at most one invitation
+ever exists per person — issuing a new one (e.g. "resend") upserts the same row
+with a fresh token/expiry rather than accumulating rows. Accepting sets the
+target `User`/`Parent` row's `password_hash` and flips `status` to `ACTIVE`
+(`InvitationsService.accept()`), inside the same tenant-scoped transaction as
+marking the invitation `accepted_at`. This table carries the platform-admin RLS
+bypass clause (see [§5](#5-row-level-security)) because acceptance is looked up
+by token hash before the caller's tenant is known, the same pre-tenant-resolution
+pattern as `refresh_tokens`/`password_reset_tokens`.
 
 ### `buses`
 ```sql
@@ -485,8 +530,8 @@ method cannot leak another tenant's rows. See
 layers are required.
 
 **Platform-admin bypass, and which tables actually need it.** `schools`,
-`audit_logs`, `users`, `parents`, `refresh_tokens`, and `password_reset_tokens`
-carry an additional clause:
+`audit_logs`, `users`, `parents`, `refresh_tokens`, `password_reset_tokens`, and
+`invitations` carry an additional clause:
 ```sql
 using (
   school_id = current_setting('app.current_school_id', true)
@@ -495,18 +540,22 @@ using (
 ```
 `PrismaService.runAsPlatformAdmin()` sets `app.is_platform_admin = 'true'` for
 narrow, audited cross-tenant reads — used only where a query is inherently
-pre-tenant by nature: `SUPER_ADMIN` platform tooling on `schools`, and credential
-resolution (login-by-identifier, refresh/reset-token-by-hash) on the other four,
-per [ADR 0010](adr/0010-credential-resolution-rls-bypass.md). **Every table queried
+pre-tenant by nature: `SUPER_ADMIN` platform tooling on `schools`, credential
+resolution (login-by-identifier, refresh/reset-token-by-hash) on the middle four,
+and invitation-acceptance (lookup by token hash, before the accepting principal's
+tenant is known) on `invitations`, per
+[ADR 0010](adr/0010-credential-resolution-rls-bypass.md). **Every table queried
 via `runAsPlatformAdmin` anywhere in the codebase must carry this clause** — a table
 with only the plain `current_school_id` check silently returns zero rows for a
 platform-admin-scoped query (`is_platform_admin` being set has no effect on a
 policy that never references it), which is exactly the bug documented in ADR 0010's
 follow-up: it broke every login/refresh/reset flow until the policies on `users`
-and `parents` were corrected to match. Tables *never* queried via
-`runAsPlatformAdmin` (`students`, `buses`, `trips`, etc.) correctly have only the
-plain tenant check — adding the bypass clause to a table nothing legitimately
-needs it for would be an unjustified widening of the escape hatch.
+and `parents` were corrected to match. This lesson was applied proactively to
+`invitations` from the start in Phase 1 Step 2, avoiding a repeat of that bug.
+Tables *never* queried via `runAsPlatformAdmin` (`students`, `buses`, `trips`,
+etc.) correctly have only the plain tenant check — adding the bypass clause to a
+table nothing legitimately needs it for would be an unjustified widening of the
+escape hatch.
 
 ## 6. Migrations
 

@@ -42,10 +42,20 @@ datasource db {
 // Enums
 // ---------------------------------------------------------------------------
 
+// ACTIVE: normal operation.
+// TRIAL: pre-paid-conversion trial — operationally equivalent to ACTIVE for
+//   authentication/access purposes, distinct only for billing/reporting.
+// SUSPENDED: temporarily blocked (billing issue, policy violation) — every
+//   user/parent of this school is blocked from login and refresh regardless
+//   of their own account status; reversible by a platform admin.
+// INACTIVE: deliberately deactivated (school closed, contract ended) — same
+//   authentication effect as SUSPENDED, distinguished for reporting/audit
+//   clarity. See docs/security.md#3-school-status.
 enum SchoolStatus {
   ACTIVE
-  SUSPENDED
   TRIAL
+  SUSPENDED
+  INACTIVE
 }
 
 // ACTIVE: can authenticate normally.
@@ -216,6 +226,7 @@ model School {
   files               File[]
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  invitations         Invitation[]
 
   @@map("schools")
 }
@@ -229,7 +240,12 @@ model User {
   schoolId           String        @map("school_id")
   email              String
   phone              String?
-  passwordHash       String        @map("password_hash")
+  // Nullable: an invited-but-not-yet-activated user (status INVITED) has no
+  // password until they accept their invitation — see the Invitation model
+  // and docs/security.md#6-invitation-flow. A user can never authenticate
+  // while this is null, because login/refresh both require status ACTIVE,
+  // which is only ever set once a password has also been set.
+  passwordHash       String?       @map("password_hash")
   fullName           String        @map("full_name")
   status             AccountStatus @default(ACTIVE)
   mfaEnabled         Boolean       @default(false) @map("mfa_enabled")
@@ -246,6 +262,7 @@ model User {
   verifiedRelationships    ParentStudent[]   @relation("ParentStudentVerifiedBy")
   recordedAttendanceEvents AttendanceEvent[] @relation("AttendanceEventRecordedBy")
   createdFiles             File[]            @relation("FileCreatedBy")
+  invitationsSent          Invitation[]      @relation("InvitationInvitedBy")
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -742,4 +759,37 @@ model PasswordResetToken {
   @@index([schoolId])
   @@index([principalType, principalId])
   @@map("password_reset_tokens")
+}
+
+// Staff (User) or parent (Parent) onboarding — the person is created up front
+// in status INVITED with no password (see User.passwordHash /
+// Parent.passwordHash), and this record tracks the single-use, time-limited
+// token that lets them set one and become ACTIVE. Same polymorphic
+// principalType/principalId shape as RefreshToken/PasswordResetToken, and
+// the same pre-tenant lookup-by-hash concern: the invitee isn't
+// authenticated yet when they open their invite link, so
+// InvitationsService looks it up via PrismaService.runAsPlatformAdmin() —
+// this table therefore also needs the platform-admin RLS bypass clause (see
+// docs/adr/0010-credential-resolution-rls-bypass.md and
+// docs/database.md#5-row-level-security).
+model Invitation {
+  id            String            @id @default(uuid())
+  schoolId      String            @map("school_id")
+  principalType AuthPrincipalType @map("principal_type")
+  principalId   String            @map("principal_id")
+  tokenHash     String            @unique @map("token_hash")
+  invitedBy     String            @map("invited_by")
+  expiresAt     DateTime          @map("expires_at")
+  acceptedAt    DateTime?         @map("accepted_at")
+  revokedAt     DateTime?         @map("revoked_at")
+  createdAt     DateTime          @default(now()) @map("created_at")
+
+  school  School @relation(fields: [schoolId], references: [id])
+  inviter User   @relation("InvitationInvitedBy", fields: [invitedBy], references: [id])
+
+  // One live invitation per principal — re-inviting updates this row (fresh
+  // token/expiry) rather than creating a second one.
+  @@unique([principalType, principalId])
+  @@index([schoolId])
+  @@map("invitations")
 }
