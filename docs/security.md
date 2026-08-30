@@ -271,16 +271,29 @@ child-privacy-sensitivity path in the product):
 
 ### 5.1 Device Security
 
-`BusDevice` (Phase 1 Step 3) deliberately has **no credential/secret column**
-at all — not a hashed one, not an encrypted one. There is no real device
-provisioning flow yet for a secret to belong to; adding a column nothing
-issues, reads, or rotates would be a fake security control, not a real one.
-`externalDeviceId` (the device's serial/IMEI) is not treated as a secret — it
-identifies a device the way a license plate identifies a car, and is safe to
-show to authorized staff. When a real provisioning flow is built, any
-credential it introduces must follow the existing token pattern already used
-for refresh/reset/invitation tokens: stored as a SHA-256 hash, never
-returned by any read endpoint, never logged.
+`BusDevice` (Phase 1 Step 3) originally shipped with **no credential/secret
+column** at all, reasoning that a column nothing issues, reads, or rotates
+would be a fake security control. Phase 1 Step 7's GPS ingestion is the
+first capability that genuinely needs device identity, so it adds the
+minimum real mechanism: `BusDevice.credentialHash` stores the SHA-256 hash
+of an opaque bearer token, generated via the same
+`TokenService.generateOpaqueToken()`/`hashOpaqueToken()` already used for
+refresh/reset/invitation tokens — never a plaintext secret at rest, never
+logged. `POST /devices/:id/credential` (`buses.manage`) issues/rotates it
+and returns the raw token exactly once; no read endpoint (`GET`/`PATCH
+/devices/:id`) ever includes it, only `credentialSetAt` (a timestamp — was
+one ever issued, and when). Rotating overwrites the previous hash outright:
+the old token stops authenticating immediately, with no overlap window.
+
+This is deliberately not a claim that real hardware provisioning now
+exists — no mTLS, no per-device certificate, no field-deployment tooling.
+`externalDeviceId` (the device's serial/IMEI) remains not treated as a
+secret — it identifies a device the way a license plate identifies a car —
+but it is no longer the *only* thing distinguishing one device from
+another: the credential is what actually authenticates a GPS ingestion
+request, so `externalDeviceId` being non-secret no longer implies anything
+about impersonation risk. See
+[ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
 
 ### 5.2 Device / Fleet Authorization
 
@@ -377,6 +390,48 @@ Phase 1 Step 3's `TRANSPORT_MANAGER` fleet-visibility fix.
 `recordedBy` on every event is always the authenticated principal's id;
 no request schema in this module has a client-suppliable actor field at
 all, so there is nothing to spoof, by construction.
+
+### 5.6 GPS Authorization (Device + Staff)
+
+Two separate identities can reach the GPS module, authenticated two
+different ways, and neither trusts the other's input:
+
+- **Device identity** (`POST /telemetry/gps`) is established by
+  `DeviceAuthGuard` from the bearer credential described in §5.1 — never a
+  staff/parent JWT, and the route is marked `@Public()` precisely so the
+  global `JwtAuthGuard` doesn't demand one. The resolved device's
+  `schoolId`/`busId` are the *only* source of truth for where a fix is
+  written; the request payload (`gpsTelemetrySchema`) has no
+  `schoolId`/`busId`/`deviceId`/`tripId` field at all, so there is nothing
+  for a malicious device to spoof — the same "eliminate the input rather
+  than validate it" technique attendance used for `tripStopId` in Step 6.
+  `tripId` is likewise never accepted from the device: it's resolved
+  server-side as "whichever trip is currently `IN_PROGRESS` for this
+  device's own bus."
+- **Staff identity** (every other GPS endpoint, plus the `/realtime/fleet`
+  WebSocket) reuses the existing `gps.read` permission — no new permission
+  was introduced, and per §2.3's matrix (already correct since Phase 0, no
+  seed drift found this time) `SCHOOL_ADMIN`/`TRANSPORT_ADMIN`/
+  `TRANSPORT_MANAGER`/`PRINCIPAL`/`SECURITY` hold it unscoped while
+  `DRIVER`/`BUS_ATTENDANT` hold it scoped to "own bus only." Neither role
+  has a permanent bus assignment in the schema, so `GpsService.resolveGpsScope`
+  resolves "own bus" the same profile-based way `AttendanceService` resolves
+  "own trip" (§5.5): does the caller have a `Driver`/`Attendant` profile,
+  and if so, what bus is their own currently `IN_PROGRESS` trip on. No
+  current trip means no accessible bus (the safe default), not "every bus."
+  This one method is shared by REST authorization checks and the WebSocket
+  gateway's room-join logic, so the rule lives in exactly one place. See
+  [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
+
+The `/realtime/fleet` WebSocket authenticates its handshake with the same
+access token used for REST (`auth.token`), verified with the existing
+`TokenService`/`AuthService`, then gated by the same `gps.read` check via
+`RbacService`. A parent token is rejected identically to no token at all —
+parents have no live-tracking access in this phase (Step 8). The room a
+socket joins is always computed server-side from `resolveGpsScope`; there
+is no code path where a client can request or discover a room name, closing
+the "arbitrary room" class of IDOR by construction rather than by checking
+it at emit time.
 
 ## 6. Testing Requirements
 

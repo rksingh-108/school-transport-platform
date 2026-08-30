@@ -9,6 +9,7 @@
  * docs/database.md#7-prisma-implementation-notes.
  */
 import 'dotenv/config';
+import { randomBytes, createHash } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import * as argon2 from 'argon2';
 import {
@@ -21,6 +22,12 @@ import {
 const prisma = new PrismaClient();
 
 const DEV_PASSWORD = 'Passw0rd!123'; // dev-only login for every seeded account
+
+/** Mirrors TokenService.generateOpaqueToken() exactly (same algorithm, no NestJS DI available in this standalone script) — see docs/adr/0014. */
+function generateDeviceCredential(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString('base64url');
+  return { raw, hash: createHash('sha256').update(raw).digest('hex') };
+}
 
 /** YYYY-MM-DD, `offsetDays` from today — relative so seeded trips always look current, whenever the seed actually runs. */
 function relativeDate(offsetDays: number): string {
@@ -248,10 +255,25 @@ async function seedDemoSchool() {
     },
   });
 
-  await prisma.busDevice.upsert({
+  // A stable, obviously-fake dev credential — printed at the end of seeding
+  // (like the dev login password) so a developer can immediately try real
+  // GPS ingestion against this device without first calling
+  // POST /devices/:id/credential themselves. Regenerating only happens on a
+  // fresh DB (create path) — an existing device keeps whatever credential
+  // it already has across reseeds.
+  const devGpsCredential = generateDeviceCredential();
+  const deviceGpsA1 = await prisma.busDevice.upsert({
     where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0001' } },
     update: {},
-    create: { schoolId: school.id, busId: bus.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0001', firmwareVersion: '1.4.0' },
+    create: {
+      schoolId: school.id,
+      busId: bus.id,
+      deviceType: 'GPS_TRACKER',
+      externalDeviceId: 'DEV-GPS-A-0001',
+      firmwareVersion: '1.4.0',
+      credentialHash: devGpsCredential.hash,
+      credentialSetAt: new Date(),
+    },
   });
   await prisma.busDevice.upsert({
     where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0002' } },
@@ -497,6 +519,35 @@ async function seedDemoSchool() {
   });
   await prisma.tripStudent.update({ where: { id: morningEntry1.id }, data: { currentStatus: 'BOARDED', boardedAt } });
 
+  // A short, realistic GPS history for the in-progress trip's bus — not the
+  // seed's job to be exhaustive, just enough for the live dashboard and bus
+  // detail page to show something real on first login. Traces roughly
+  // between the route's first two stops, ending near "now" so it reads as
+  // LIVE immediately after seeding. Ingested directly (bypassing the real
+  // HTTP endpoint, like every other seed row bypasses its service layer) —
+  // GpsService's own dedup/monotonic rules aren't exercised here, only by
+  // the e2e suite.
+  const gpsTrackNow = Date.now();
+  await prisma.gpsPoint.createMany({
+    data: [
+      { minutesAgo: 6, latitude: 12.9716, longitude: 77.5946, speedKmh: 0, heading: 40 },
+      { minutesAgo: 4, latitude: 12.9738, longitude: 77.6034, speedKmh: 28, heading: 52 },
+      { minutesAgo: 2, latitude: 12.9761, longitude: 77.6189, speedKmh: 31, heading: 58 },
+      { minutesAgo: 0.5, latitude: 12.9779, longitude: 77.6352, speedKmh: 22, heading: 61 },
+    ].map((p) => ({
+      schoolId: school.id,
+      busId: bus.id,
+      deviceId: deviceGpsA1.id,
+      tripId: morningTripToday.id,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      speedKmh: p.speedKmh,
+      heading: p.heading,
+      accuracyM: 6,
+      deviceTime: new Date(gpsTrackNow - p.minutesAgo * 60_000),
+    })),
+  });
+
   const afternoonTripToday = await createSeedTrip({
     schoolId: school.id,
     routeId: afternoonRoute.id,
@@ -590,7 +641,7 @@ async function seedDemoSchool() {
     data: { currentStatus: 'DROPPED_OFF', boardedAt: correctedBoardAt, droppedOffAt },
   });
 
-  return { school, bus, route, driver, attendant, student, parent };
+  return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };
 }
 
 /**
@@ -817,6 +868,12 @@ async function main() {
   const demoB = await seedSchoolB();
   console.log(
     `Done. Schools: ${demo.school.slug}, ${demoB.school.slug}. Dev login password for every seeded account: ${DEV_PASSWORD}`,
+  );
+  console.log(
+    `Dev GPS device credential (device ${demo.deviceGpsA1.externalDeviceId}, bus ${demo.bus.registrationNumber}): ${demo.devGpsCredential.raw}`,
+  );
+  console.log(
+    `  Try it: curl -X POST http://localhost:3001/api/v1/telemetry/gps -H "Authorization: Bearer ${demo.devGpsCredential.raw}" -H "Content-Type: application/json" -d '{"latitude":12.98,"longitude":77.64,"recordedAt":"${new Date().toISOString()}"}'`,
   );
 }
 

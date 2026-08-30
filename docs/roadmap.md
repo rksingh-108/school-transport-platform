@@ -79,8 +79,25 @@ surface):
    drop-off/absence/correction transition matrix, correction events
    preserve history, cross-tenant IDOR, RLS enforcement — confirmed both
    in e2e tests and live against the running server.
-10. **GPS ingestion (HTTP, MVP) + live tracking module** + `/ws/tracking`. Tests:
-    parent receives only own-child's-bus updates; staff receives school-wide.
+10. **GPS ingestion (HTTP, MVP) + live tracking module** + `/realtime/fleet`.
+    **Done (staff-side)** — `GpsModule` (`apps/api/src/gps/`): device-credential
+    ingestion (`POST /telemetry/gps`), Redis-backed current location with a
+    Postgres cold-start fallback, bounded history reads, and a Socket.IO
+    fleet-tracking gateway. See
+    [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the
+    device-authentication mechanism, own-bus scoping for `DRIVER`/
+    `BUS_ATTENDANT`, and the deliberate deviations from ADR 0005 (no
+    separate `apps/ingestion` process yet, no Redis Socket.IO adapter yet —
+    both tracked here as follow-ups once real device/scale requirements
+    justify them). Tests: coordinate/timestamp validation, monotonic
+    current-location rule, retry dedup, device tenant security, cross-tenant
+    IDOR, RLS enforcement, and WebSocket tenant/role isolation with a real
+    socket.io-client — confirmed both in e2e tests and live against the
+    running server. **Not done**: parent-facing location access (own-child's-
+    bus updates) — that's Phase 1 Step 8, deliberately not started here.
+    Also not done: MQTT ingestion, camera/edge-AI telemetry, geofencing,
+    speed monitoring, GPS data retention/purge job (config placeholder only
+    — see [privacy.md](privacy.md)).
 11. **Notifications** (in-app + one real channel, e.g. push via a provider adapter;
     SMS/email adapters stubbed with a local dev implementation per the "never fake
     an integration silently" rule — the adapter clearly logs "not configured"

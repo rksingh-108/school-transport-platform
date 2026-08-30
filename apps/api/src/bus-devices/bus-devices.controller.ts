@@ -68,6 +68,19 @@ export class BusDevicesController {
     return this.busDevicesService.deactivate(principal, id, this.metaFrom(req));
   }
 
+  /**
+   * Issues/rotates this device's GPS-ingestion bearer credential (Phase 1
+   * Step 7). Gated by `buses.manage` — same reasoning as every other device
+   * lifecycle action on this controller (docs/security.md#5.2). The
+   * response is the only place the raw token is ever returned.
+   */
+  @RequirePermission('buses.manage')
+  @Post('devices/:id/credential')
+  @HttpCode(HttpStatus.OK)
+  async rotateCredential(@CurrentPrincipal() principal: AuthenticatedPrincipal, @Param('id') id: string, @Req() req: Request) {
+    return this.busDevicesService.rotateCredential(principal, id, this.metaFrom(req));
+  }
+
   private metaFrom(req: Request) {
     return { ip: req.ip, userAgent: req.headers['user-agent'], requestId: req.id };
   }

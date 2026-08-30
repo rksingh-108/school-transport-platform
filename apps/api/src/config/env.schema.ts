@@ -57,6 +57,25 @@ export const envSchema = z.object({
   // behavior itself never reveals whether an account exists.
   FAILED_LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
   FAILED_LOGIN_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // GPS telemetry / realtime tracking (Phase 1 Step 7) — see
+  // docs/adr/0014-gps-telemetry-and-realtime-tracking.md. Centralized here
+  // rather than hard-coded so freshness/validation behavior can be tuned per
+  // deployment without a code change.
+  GPS_LIVE_THRESHOLD_SECONDS: z.coerce.number().int().positive().default(90),
+  GPS_STALE_THRESHOLD_SECONDS: z.coerce.number().int().positive().default(300),
+  // A fix further in the future than this (server clock vs. device clock)
+  // is rejected outright rather than silently accepted or clamped — a
+  // future timestamp usually means a misconfigured device clock, not a
+  // real position.
+  GPS_MAX_FUTURE_SKEW_SECONDS: z.coerce.number().int().positive().default(120),
+  // A fix older than this is rejected as "obviously impossible" telemetry
+  // (garbage clock, not a late-arriving buffered point) rather than stored.
+  GPS_MAX_PAST_AGE_DAYS: z.coerce.number().int().positive().default(7),
+  // Not an active purge job — see docs/database.md and docs/privacy.md.
+  // Exact retention is an operational/legal decision, deliberately not
+  // invented here; this is the placeholder a future purge job will read.
+  GPS_TELEMETRY_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
 });
 
 export type Env = z.infer<typeof envSchema>;

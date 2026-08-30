@@ -12,3 +12,4 @@ export * from './routes';
 export * from './stops';
 export * from './trips';
 export * from './attendance';
+export * from './gps';

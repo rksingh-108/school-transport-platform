@@ -1,4 +1,4 @@
-import type { CursorPage, BusDto, BusDeviceDto } from '@school-transport/shared-types';
+import type { CursorPage, BusDto, BusDeviceDto, DeviceCredentialDto } from '@school-transport/shared-types';
 import { apiFetch } from '../api-client';
 
 function toQuery(params: object): string {
@@ -73,4 +73,9 @@ export async function updateDevice(id: string, input: { firmwareVersion?: string
 
 export async function deactivateDevice(id: string): Promise<BusDeviceDto> {
   return apiFetch(`/devices/${id}/deactivate`, { method: 'POST' });
+}
+
+/** Returns the raw bearer token exactly once — the caller must show/copy it immediately; it can never be retrieved again. */
+export async function rotateDeviceCredential(id: string): Promise<DeviceCredentialDto> {
+  return apiFetch(`/devices/${id}/credential`, { method: 'POST' });
 }

@@ -18,6 +18,15 @@ day one, because they have different scaling, language, and failure characterist
 2. **Realtime/telemetry ingestion** — device-facing ingestion is a thin adapter in
    front of the monolith (HTTP for MVP, MQTT broker later) so device protocol churn
    never touches business logic. See [adr/0005-realtime-and-telemetry-ingestion.md](adr/0005-realtime-and-telemetry-ingestion.md).
+   **Deviation (Phase 1 Step 7)**: GPS ingestion is currently an HTTP
+   controller inside `apps/api`'s own `gps/` module, not yet a separate
+   `apps/ingestion` process — this phase's explicit "no microservices yet"
+   instruction took precedence over standing up that process boundary
+   before anything justifies it. The module's internal seam (a device-auth
+   guard in front of a service with a stable contract) is deliberately the
+   one ADR 0005 anticipated, so extracting a real adapter later changes
+   deployment topology, not this design. See
+   [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
 3. **Object storage** — accessed only through a storage abstraction, never a direct
    SDK call from business modules, so the backing provider (local disk / MinIO / S3 /
    an Indian cloud provider) can change without touching module code.
@@ -52,9 +61,11 @@ it* (per instruction — no speculative microservices).
                 └────────────────┘   └─────────────┘
 
    Bus GPS Device ─┐
-   Bus Camera/Edge ┼──▶  Ingestion Adapter (apps/ingestion, Phase 1 = HTTP,
-                   │      Phase 2+ = MQTT broker) ──▶ NestJS telemetry module
-   Edge AI Box ─────┘                                        │
+   Bus Camera/Edge ┼──▶  Ingestion (Phase 1 Step 7 = an HTTP controller inside
+                   │      apps/api's own gps/ module, not yet the separate
+   Edge AI Box ─────┘      apps/ingestion process this diagram originally
+                            planned — see the deviation note below) ──▶ gps module
+                                                              │
                                                               ▼
                                               Python AI Service (apps/ai-service,
                                               Phase 3) — safety event inference,
@@ -91,7 +102,7 @@ school-transport-platform/
 │   │   │   │   ├── route-stops/         # named to match bus-devices' convention: sub-resource module named after the owning relationship
 │   │   │   │   ├── trips/               # one NestJS module — TripsController (+ read-only trip-stops), TripStudentsController (manifest), and AttendanceController (boarding/drop-off/absence/correction, Phase 1 Step 6) share it rather than each getting a separate module, since all three are tightly coupled to Trip and none needs independent app-level wiring
 │   │   │   │   ├── attendance/          # placeholder — actual implementation lives in trips/ (see above); reserved for a future split if attendance outgrows the shared module
-│   │   │   │   ├── gps/                 # telemetry ingestion + live state
+│   │   │   │   ├── gps/                 # telemetry ingestion + current-location state + realtime gateway — implemented Phase 1 Step 7, see ADR 0014
 │   │   │   │   ├── geofencing/          # phase 2
 │   │   │   │   ├── speed-monitoring/    # phase 2
 │   │   │   │   ├── cameras/             # phase 2
@@ -180,9 +191,14 @@ rule (`eslint-plugin-boundaries`), not just convention.
   `{ code, message, requestId, details? }`; internal errors never leak stack traces.
 - **Observability**: request-id middleware, structured JSON logs (pino), and a
   `/health`, `/health/ready`, `/health/live` set of endpoints from day one.
-- **Realtime**: a single WebSocket gateway namespace per concern (`/ws/tracking`,
-  `/ws/ops`) backed by the Redis adapter so it can scale horizontally later without
-  a rewrite.
+- **Realtime**: a single WebSocket gateway namespace per concern — `/realtime/fleet`
+  (staff fleet tracking, implemented Phase 1 Step 7) is the first one built.
+  **Deviation**: no Redis Socket.IO adapter yet — this was the Phase 0 plan
+  ("backed by the Redis adapter so it can scale horizontally later"), but
+  Step 7's instructions to avoid speculative infrastructure took precedence
+  at MVP's single-instance scale; see
+  [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the
+  swap-in point when horizontal scaling is real.
 
 ## 4. Module Boundaries — Ownership Table
 

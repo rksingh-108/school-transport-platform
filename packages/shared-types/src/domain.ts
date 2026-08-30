@@ -115,7 +115,13 @@ export interface AttendantDto {
   updatedAt: string;
 }
 
-/** Never includes a device secret/credential — no such field exists on this model yet; see docs/security.md#device-security. */
+/**
+ * Never includes the device credential hash. `credentialSetAt` says only
+ * *whether/when* a bearer credential was issued (Phase 1 Step 7) — the
+ * plaintext token itself is returned exactly once, by
+ * `POST /devices/:id/credential`, never by any read endpoint. See
+ * docs/security.md#5.1-device-security.
+ */
 export interface BusDeviceDto {
   id: string;
   busId: string;
@@ -124,10 +130,24 @@ export interface BusDeviceDto {
   firmwareVersion: string | null;
   metadata: Record<string, unknown> | null;
   status: 'ACTIVE' | 'INACTIVE' | 'FAULTY';
+  credentialSetAt: string | null;
   lastSeenAt: string | null;
   installedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * A device's bearer credential, minted exactly once by
+ * `POST /devices/:id/credential`. The raw token is shown to the caller a
+ * single time and never persisted anywhere in plaintext (only its SHA-256
+ * hash is stored, same pattern as refresh/reset/invitation tokens) — see
+ * docs/adr/0014-gps-telemetry-and-realtime-tracking.md.
+ */
+export interface DeviceCredentialDto {
+  deviceId: string;
+  token: string;
+  issuedAt: string;
 }
 
 /** A reusable planned path — never a specific day's execution (that's the future Trip). See docs/database.md §8. */
@@ -256,4 +276,66 @@ export interface AttendanceEventDto {
   correctsEventId: string | null;
   notes: string | null;
   createdAt: string;
+}
+
+/**
+ * A bus's live/last-known position (Phase 1 Step 7). Backed by Redis for
+ * fast reads with a Postgres fallback after a cold start — see
+ * docs/adr/0014-gps-telemetry-and-realtime-tracking.md. When a bus has never
+ * reported, every location field is `null` and `freshness` is `'UNKNOWN'`;
+ * this is never returned to parents in this phase (no parent GPS endpoint
+ * exists yet — docs/privacy.md).
+ */
+export interface BusLocationDto {
+  busId: string;
+  busRegistrationNumber: string;
+  busFleetNumber: string | null;
+  tripId: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  speedKmh: number | null;
+  heading: number | null;
+  accuracyM: number | null;
+  /** The device's own clock reading for this fix ("recordedAt" in the API). */
+  recordedAt: string | null;
+  /** Server-controlled — when this fix was actually received. */
+  receivedAt: string | null;
+  freshness: 'LIVE' | 'STALE' | 'UNKNOWN';
+  /** BusDevice.lastSeenAt — distinct from `recordedAt`: a device can be "seen" (any ingest attempt) without that fix becoming the current location (see the monotonic-timestamp rule in the ADR). */
+  deviceLastSeenAt: string | null;
+}
+
+/** One historical telemetry row. Never includes `deviceId` — the dashboard's history view has no use for it, and omitting it costs nothing. */
+export interface GpsPointDto {
+  id: string;
+  busId: string;
+  tripId: string | null;
+  latitude: number;
+  longitude: number;
+  speedKmh: number | null;
+  heading: number | null;
+  accuracyM: number | null;
+  recordedAt: string;
+  receivedAt: string;
+}
+
+/**
+ * The realtime event contract (`bus.location.updated`) emitted over the
+ * Socket.IO fleet-tracking gateway — identical shape to the pieces of
+ * `BusLocationDto` a live subscriber actually needs, so the frontend can
+ * reuse one renderer for both the initial REST fetch and realtime pushes.
+ * Never includes device secrets, internal DB ids, or other-tenant data —
+ * the gateway only ever emits into the caller's own school's room(s).
+ */
+export interface BusLocationUpdatedEvent {
+  busId: string;
+  tripId: string | null;
+  latitude: number;
+  longitude: number;
+  speedKmh: number | null;
+  heading: number | null;
+  accuracyM: number | null;
+  recordedAt: string;
+  receivedAt: string;
+  freshness: 'LIVE' | 'STALE' | 'UNKNOWN';
 }

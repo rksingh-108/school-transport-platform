@@ -5,8 +5,10 @@ export const DEVICE_TYPES = ['GPS_TRACKER', 'EDGE_COMPUTER', 'NETWORK_GATEWAY'] 
 const patchableDeviceStatusSchema = z.enum(['ACTIVE', 'FAULTY']);
 
 /**
- * No credential/secret field — there is no real device-provisioning flow to
- * issue one against yet (docs/security.md#device-security). `deviceType` is
+ * No credential/secret field on the create/update payload — a device's
+ * bearer credential (Phase 1 Step 7) is never client-supplied; it's
+ * generated server-side by `POST /devices/:id/credential` and returned
+ * exactly once (docs/security.md#5.1-device-security). `deviceType` is
  * fixed at registration and never updatable — a GPS tracker doesn't turn
  * into an edge computer after the fact.
  */

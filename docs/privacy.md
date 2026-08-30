@@ -46,6 +46,19 @@ requirements this document does not attempt to interpret authoritatively.
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
 
+**Implementation status (Phase 1 Step 7):** the "GPS points" row above is
+only partially built. Raw telemetry (`GpsPoint`) and a Redis-backed current
+location are real, and staff can read them per RBAC (`gps.read`, with
+`DRIVER`/`BUS_ATTENDANT` scoped to their own currently-assigned bus — see
+security.md §5.6). **"parent sees only current/derived location" does not
+exist yet** — there is no parent-facing location endpoint or realtime
+channel at all in this phase; that row's parent column describes the
+Phase 1 Step 8 target, not current behavior. `GPS_TELEMETRY_RETENTION_DAYS`
+(default 90) exists as a config placeholder only — no purge/aggregation job
+runs yet, so raw points are currently kept indefinitely (tracked in
+[roadmap.md](roadmap.md)); "short window then aggregated/discarded" above
+is the intended, not-yet-built policy.
+
 **Implementation status (Phase 1 Step 6):** the "Attendance/boarding events"
 row above is only partially built. `AttendanceEvent` rows (boarding/
 drop-off/absence/correction, `MANUAL` source only — no device/QR/RFID/AI

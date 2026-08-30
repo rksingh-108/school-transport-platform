@@ -91,3 +91,20 @@ before that migration was ever applied elsewhere). See
 [database.md](../database.md#5-row-level-security) for the corrected policy
 shape and the resulting rule: **every table a call site passes to
 `runAsPlatformAdmin` must carry this clause, and no other table should.**
+
+## Extension (Phase 1 Step 7): `bus_devices`
+
+GPS device authentication (`GpsService.resolveDeviceByCredential`) is the
+same shape as login: a device presents an opaque bearer credential, and the
+system must find out which device — and therefore which school — it
+belongs to *before* any tenant context exists. This is looked up via
+`runAsPlatformAdmin` against `bus_devices.credential_hash`, exactly like a
+refresh/reset token lookup. `bus_devices` was created in Phase 1 Step 3 with
+only the plain tenant-scoped policy (no pre-tenant lookup existed against it
+until now), so the rule above applied again: the first implementation hit
+the identical zero-rows-always bug this ADR already describes, caught
+immediately by the GPS e2e suite (every ingestion test failed 401), and
+fixed the same way — adding the `OR is_platform_admin` clause to
+`bus_devices`' policy (in
+`prisma/migrations/20260830110000_gps_telemetry_and_device_credentials/`).
+See [ADR 0014](0014-gps-telemetry-and-realtime-tracking.md).

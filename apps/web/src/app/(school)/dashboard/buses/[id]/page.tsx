@@ -2,8 +2,18 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { BusDto, BusDeviceDto } from '@school-transport/shared-types';
-import { archiveBus, deactivateDevice, getBus, listBusDevices, registerDevice, updateBus, updateDevice } from '@/lib/api/buses';
+import type { BusDto, BusDeviceDto, BusLocationDto } from '@school-transport/shared-types';
+import {
+  archiveBus,
+  deactivateDevice,
+  getBus,
+  listBusDevices,
+  registerDevice,
+  rotateDeviceCredential,
+  updateBus,
+  updateDevice,
+} from '@/lib/api/buses';
+import { getBusLocation } from '@/lib/api/gps';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
@@ -21,8 +31,16 @@ function errorMessage(error: unknown, notFoundMessage: string): string {
 }
 
 async function loadBusAndDevices(id: string) {
-  const [bus, devices] = await Promise.all([getBus(id), listBusDevices(id)]);
-  return { bus, devices };
+  // A driver/attendant viewing their own bus has `gps.read` but not
+  // `buses.read`/`buses.manage` — the bus and device lookups above already
+  // 403 for them (this page is only linked from buses.read-gated screens in
+  // practice), so location alone must not fail the whole page load.
+  const [bus, devices, location] = await Promise.all([
+    getBus(id),
+    listBusDevices(id),
+    getBusLocation(id).catch(() => null),
+  ]);
+  return { bus, devices, location };
 }
 
 export default function BusDetailPage() {
@@ -32,10 +50,18 @@ export default function BusDetailPage() {
   if (loading) return <LoadingState />;
   if (error || !data) return <ErrorState message={errorMessage(error, 'Bus not found.')} onRetry={reload} />;
 
-  return <BusEditForm key={data.bus.id} bus={data.bus} initialDevices={data.devices} />;
+  return <BusEditForm key={data.bus.id} bus={data.bus} initialDevices={data.devices} location={data.location} />;
 }
 
-function BusEditForm({ bus, initialDevices }: { bus: BusDto; initialDevices: BusDeviceDto[] }) {
+function BusEditForm({
+  bus,
+  initialDevices,
+  location,
+}: {
+  bus: BusDto;
+  initialDevices: BusDeviceDto[];
+  location: BusLocationDto | null;
+}) {
   const router = useRouter();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('buses.manage');
@@ -61,6 +87,7 @@ function BusEditForm({ bus, initialDevices }: { bus: BusDto; initialDevices: Bus
   const [registering, setRegistering] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
+  const [issuedCredential, setIssuedCredential] = useState<{ deviceId: string; token: string } | null>(null);
 
   async function onSave() {
     setSaveError(null);
@@ -132,6 +159,23 @@ function BusEditForm({ bus, initialDevices }: { bus: BusDto; initialDevices: Bus
       setDevices((prev) => prev.map((d) => (d.id === deviceId ? updated : d)));
     } catch (err) {
       setDeviceError(err instanceof ApiError ? err.message : 'Unable to update device.');
+    } finally {
+      setBusyDeviceId(null);
+    }
+  }
+
+  async function onRotateCredential(deviceId: string) {
+    setDeviceError(null);
+    setIssuedCredential(null);
+    setBusyDeviceId(deviceId);
+    try {
+      const result = await rotateDeviceCredential(deviceId);
+      setIssuedCredential({ deviceId, token: result.token });
+      setDevices((prev) =>
+        prev.map((d) => (d.id === deviceId ? { ...d, credentialSetAt: result.issuedAt } : d)),
+      );
+    } catch (err) {
+      setDeviceError(err instanceof ApiError ? err.message : 'Unable to issue a credential.');
     } finally {
       setBusyDeviceId(null);
     }
@@ -211,32 +255,71 @@ function BusEditForm({ bus, initialDevices }: { bus: BusDto; initialDevices: Bus
       </div>
 
       <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Location</h2>
+        {location && (location.latitude !== null || location.deviceLastSeenAt) ? (
+          <div className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+            <div>
+              <p className="text-sm text-zinc-900 dark:text-zinc-100">
+                {location.latitude !== null && location.longitude !== null
+                  ? `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`
+                  : 'No fix received yet'}
+                {location.speedKmh !== null ? ` · ${location.speedKmh.toFixed(0)} km/h` : ''}
+              </p>
+              <p className="text-xs text-zinc-500">
+                Last fix: {location.recordedAt ? new Date(location.recordedAt).toLocaleString() : 'Never'}
+                {' · '}Device last seen: {location.deviceLastSeenAt ? new Date(location.deviceLastSeenAt).toLocaleString() : 'Never'}
+              </p>
+            </div>
+            <StatusBadge status={location.freshness} />
+          </div>
+        ) : (
+          <EmptyState title="No telemetry yet" description="This bus has not reported a GPS position." />
+        )}
+      </div>
+
+      <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
         <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Devices</h2>
         {devices.length === 0 && <EmptyState title="No devices registered" />}
         {devices.map((d) => (
-          <div key={d.id} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-            <div>
-              <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                {d.deviceType.replace('_', ' ')} · {d.externalDeviceId}
-              </p>
-              <p className="text-xs text-zinc-500">
-                Last seen: {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : 'Never'}
-                {d.firmwareVersion ? ` · Firmware ${d.firmwareVersion}` : ''}
-              </p>
+          <div key={d.id} className="space-y-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  {d.deviceType.replace('_', ' ')} · {d.externalDeviceId}
+                </p>
+                <p className="text-xs text-zinc-500">
+                  Last seen: {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : 'Never'}
+                  {d.firmwareVersion ? ` · Firmware ${d.firmwareVersion}` : ''}
+                  {d.deviceType === 'GPS_TRACKER'
+                    ? ` · Credential: ${d.credentialSetAt ? `issued ${new Date(d.credentialSetAt).toLocaleDateString()}` : 'not issued'}`
+                    : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge status={d.status} />
+                {canManage && d.deviceType === 'GPS_TRACKER' && d.status !== 'INACTIVE' && (
+                  <Button variant="secondary" onClick={() => onRotateCredential(d.id)} disabled={busyDeviceId === d.id}>
+                    {d.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
+                  </Button>
+                )}
+                {canManage && d.status === 'ACTIVE' && (
+                  <Button variant="secondary" onClick={() => onMarkFaulty(d.id)} disabled={busyDeviceId === d.id}>
+                    Mark faulty
+                  </Button>
+                )}
+                {canManage && d.status !== 'INACTIVE' && (
+                  <Button variant="danger" onClick={() => onDeactivateDevice(d.id)} disabled={busyDeviceId === d.id}>
+                    Deactivate
+                  </Button>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <StatusBadge status={d.status} />
-              {canManage && d.status === 'ACTIVE' && (
-                <Button variant="secondary" onClick={() => onMarkFaulty(d.id)} disabled={busyDeviceId === d.id}>
-                  Mark faulty
-                </Button>
-              )}
-              {canManage && d.status !== 'INACTIVE' && (
-                <Button variant="danger" onClick={() => onDeactivateDevice(d.id)} disabled={busyDeviceId === d.id}>
-                  Deactivate
-                </Button>
-              )}
-            </div>
+            {issuedCredential?.deviceId === d.id && (
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                <p className="font-medium">Copy this credential now — it will not be shown again:</p>
+                <code className="mt-1 block break-all font-mono">{issuedCredential.token}</code>
+              </div>
+            )}
           </div>
         ))}
 

@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { BusDeviceDto } from '@school-transport/shared-types';
+import type { BusDeviceDto, DeviceCredentialDto } from '@school-transport/shared-types';
 import type { CreateDeviceInput, UpdateDeviceInput } from '@school-transport/shared-schemas';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../common/audit/audit.service';
+import { TokenService } from '../auth/services/token.service';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
 import type { RequestMeta } from '../auth/services/auth.service';
 
@@ -15,6 +16,7 @@ type DeviceRow = {
   firmwareVersion: string | null;
   metadata: Prisma.JsonValue;
   status: string;
+  credentialSetAt: Date | null;
   lastSeenAt: Date | null;
   installedAt: Date | null;
   createdAt: Date;
@@ -26,6 +28,7 @@ export class BusDevicesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly tokenService: TokenService,
   ) {}
 
   /** Every operation first confirms the bus itself belongs to the caller's tenant — a device can never be reached through a foreign bus id. */
@@ -137,6 +140,39 @@ export class BusDevicesService {
     return this.toDto(device);
   }
 
+  /**
+   * Issues (or rotates) this device's GPS-ingestion bearer credential. The
+   * raw token is returned exactly once — only its SHA-256 hash is
+   * persisted, the same generate/hash mechanics `TokenService` already uses
+   * for refresh/reset/invitation tokens (docs/security.md#5.1-device-security).
+   * Rotating overwrites the previous hash outright: the old token stops
+   * working immediately, there is no overlap window, matching the "no
+   * reactivate" one-way spirit already used for `deactivate()` above but
+   * for a credential rather than a status.
+   */
+  async rotateCredential(principal: AuthenticatedPrincipal, id: string, meta: RequestMeta): Promise<DeviceCredentialDto> {
+    const existing = await this.prisma.runInTenantContext(principal.schoolId, (tx) => tx.busDevice.findFirst({ where: { id } }));
+    if (!existing) throw new NotFoundException();
+
+    const { raw, hash } = this.tokenService.generateOpaqueToken();
+    const issuedAt = new Date();
+    await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
+      tx.busDevice.update({ where: { id }, data: { credentialHash: hash, credentialSetAt: issuedAt } }),
+    );
+
+    await this.auditService.record(principal.schoolId, {
+      actorType: 'USER',
+      actorId: principal.id,
+      action: 'DEVICE_CREDENTIAL_ROTATED',
+      subjectType: 'BusDevice',
+      subjectId: id,
+      requestId: meta.requestId,
+      ipAddress: meta.ip,
+    });
+
+    return { deviceId: id, token: raw, issuedAt: issuedAt.toISOString() };
+  }
+
   private toDto(device: DeviceRow): BusDeviceDto {
     return {
       id: device.id,
@@ -146,6 +182,7 @@ export class BusDevicesService {
       firmwareVersion: device.firmwareVersion,
       metadata: (device.metadata as Record<string, unknown> | null) ?? null,
       status: device.status as BusDeviceDto['status'],
+      credentialSetAt: device.credentialSetAt?.toISOString() ?? null,
       lastSeenAt: device.lastSeenAt?.toISOString() ?? null,
       installedAt: device.installedAt?.toISOString() ?? null,
       createdAt: device.createdAt.toISOString(),

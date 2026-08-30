@@ -524,12 +524,19 @@ model BusDevice {
   firmwareVersion  String?      @map("firmware_version")
   // Device-specific configuration (e.g. reporting interval), distinct from
   // lastHealth (a telemetry-derived snapshot no ingestion pipeline writes to
-  // yet — see docs/roadmap.md). No credential/secret field exists on this
-  // model: there is no real device-provisioning flow to issue one against
-  // yet, and adding a secret column nothing populates or reads would be a
-  // fake abstraction, not a security control. See docs/security.md#device-security.
+  // yet — see docs/roadmap.md).
   metadata         Json?
   status           DeviceStatus @default(ACTIVE)
+  // Phase 1 Step 7's minimal, real device credential: an opaque bearer
+  // token whose SHA-256 hash is stored here, following the exact same
+  // generate/hash pattern as refresh/reset/invitation tokens
+  // (TokenService.generateOpaqueToken) — never a plaintext secret at rest.
+  // NULL until a staff member explicitly issues one via
+  // `POST /devices/:id/credential`; a device with no credential set cannot
+  // authenticate to the GPS ingestion endpoint at all. See
+  // docs/security.md#5.1-device-security and docs/adr/0014.
+  credentialHash   String?      @map("credential_hash")
+  credentialSetAt  DateTime?    @map("credential_set_at")
   lastSeenAt       DateTime?    @map("last_seen_at")
   lastHealth       Json?        @map("last_health")
   installedAt      DateTime?    @map("installed_at")
@@ -541,6 +548,7 @@ model BusDevice {
   gpsPoints GpsPoint[]
 
   @@unique([deviceType, externalDeviceId])
+  @@unique([credentialHash])
   @@index([busId])
   @@map("bus_devices")
 }
@@ -828,6 +836,22 @@ model AttendanceEvent {
 // GPS / Telemetry
 // ---------------------------------------------------------------------------
 
+// Historical/raw telemetry — one row per accepted device fix (Phase 1 Step
+// 7). Deliberately NOT the read path for "where is this bus right now": that
+// is Redis (see docs/adr/0014-gps-telemetry-and-realtime-tracking.md) with a
+// fallback to `ORDER BY deviceTime DESC LIMIT 1` on this table after a cold
+// start. `deviceTime` is the device's own clock ("recordedAt" in the API);
+// `receivedAt` is server-controlled and never client-suppliable. `accuracyM`
+// was added this phase (the model's minimum viable field set already
+// included lat/lng/speed/heading/device/bus/school/timestamps from Phase 0;
+// accuracy is genuinely useful operational GPS data, so it earns its column
+// too — ignitionOn/networkState from the Phase 0 scaffold remain unused by
+// any ingestion path this phase, same "don't wire a field just because a
+// column exists" discipline as attendance's TripStudentStatus enum values).
+// `@@unique([deviceId, deviceTime])` is the retry-safe dedup key: a device
+// resending the same fix (same clock reading) is a no-op, not a duplicate
+// row — no client-supplied event ID was worth adding for polling-interval
+// GPS trackers where device+timestamp is already a natural idempotency key.
 model GpsPoint {
   id           BigInt   @id @default(autoincrement())
   schoolId     String   @map("school_id")
@@ -838,6 +862,7 @@ model GpsPoint {
   longitude    Float
   speedKmh     Decimal? @map("speed_kmh") @db.Decimal(5, 2)
   heading      Decimal? @db.Decimal(5, 2)
+  accuracyM    Decimal? @map("accuracy_m") @db.Decimal(6, 2)
   ignitionOn   Boolean? @map("ignition_on")
   networkState String?  @map("network_state")
   deviceTime   DateTime @map("device_time")
@@ -848,8 +873,10 @@ model GpsPoint {
   device BusDevice @relation(fields: [deviceId], references: [id])
   trip   Trip?     @relation(fields: [tripId], references: [id])
 
+  @@unique([deviceId, deviceTime])
   @@index([busId, deviceTime(sort: Desc)])
   @@index([tripId])
+  @@index([schoolId, deviceTime(sort: Desc)])
   @@map("gps_points")
 }
 

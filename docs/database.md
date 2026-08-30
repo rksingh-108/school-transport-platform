@@ -295,6 +295,13 @@ create table bus_devices (
   firmware_version text,
   metadata jsonb, -- device configuration (e.g. reporting interval); distinct from last_health
   status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','FAULTY')),
+  -- Phase 1 Step 7: SHA-256 hash of an opaque bearer credential, same
+  -- generate/hash mechanics as refresh/reset/invitation tokens. NULL until
+  -- `POST /devices/:id/credential` issues one; a device with no credential
+  -- cannot authenticate to GPS ingestion at all. See
+  -- docs/adr/0014-gps-telemetry-and-realtime-tracking.md.
+  credential_hash text unique,
+  credential_set_at timestamptz,
   last_seen_at timestamptz,
   last_health jsonb,
   installed_at timestamptz,
@@ -304,10 +311,11 @@ create table bus_devices (
 );
 create index on bus_devices (bus_id);
 ```
-No credential/secret column exists on this table — see
-[security.md#device-security](security.md#device-security) for why. As with
-`buses.status`, `PATCH` cannot set `status` to `INACTIVE` directly; only
-`POST /devices/:id/deactivate` can.
+As with `buses.status`, `PATCH` cannot set `status` to `INACTIVE` directly;
+only `POST /devices/:id/deactivate` can. `credential_hash`'s RLS policy
+carries the same platform-admin bypass as `users`/`refresh_tokens` (§5) —
+`GpsService` looks a device up by this hash before its tenant is known, the
+same shape as a login/refresh-token lookup.
 
 ### `drivers`, `attendants`
 Transport-specific profiles layered onto an existing `User` — never a second
@@ -585,26 +593,39 @@ denormalized projection of "the latest event for this student" — see
 
 ### `gps_points`
 High-volume, append-only, candidate for partitioning by day/bus once volume warrants
-it (documented, not built prematurely).
+it (documented, not built prematurely). Implemented in Phase 1 Step 7 — see
+[ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the full
+design (raw-history-vs-current-location split, Redis-backed current state,
+monotonic timestamp rule, dedup strategy, device authentication).
 ```sql
 create table gps_points (
   id bigserial primary key,
   school_id uuid not null references schools(id),
   bus_id uuid not null references buses(id),
   device_id uuid not null references bus_devices(id),
-  trip_id uuid references trips(id),
+  trip_id uuid references trips(id), -- server-derived: the bus's own IN_PROGRESS trip, never client-supplied
   latitude double precision not null,
   longitude double precision not null,
   speed_kmh numeric(5,2),
   heading numeric(5,2),
-  ignition_on boolean,
-  network_state text,
-  device_time timestamptz not null,
-  received_at timestamptz not null default now()
+  accuracy_m numeric(6,2), -- added Phase 1 Step 7 — genuinely useful operational GPS data
+  ignition_on boolean, -- Phase 0 scaffold field, still unused by any ingestion path
+  network_state text,  -- Phase 0 scaffold field, still unused by any ingestion path
+  device_time timestamptz not null, -- the device's own clock ("recordedAt" in the API)
+  received_at timestamptz not null default now(), -- server-controlled, never client-suppliable
+  unique (device_id, device_time) -- retry-safe dedup key: a resent identical fix is a no-op, not a duplicate row
 );
 create index on gps_points (bus_id, device_time desc);
 create index on gps_points (trip_id);
+create index on gps_points (school_id, device_time desc); -- the fleet-wide-overview query's access pattern
 ```
+"Current location" is deliberately **not** answered by querying this table
+per request — see the ADR's Redis-backed design
+(`school:{schoolId}:bus:{busId}:location`, with a fallback to
+`ORDER BY device_time DESC LIMIT 1` here only after a cold start).
+`GPS_TELEMETRY_RETENTION_DAYS` (config, default 90) is a documented
+placeholder — no purge job runs against this table yet; see
+[privacy.md](privacy.md) and [roadmap.md](roadmap.md).
 `bigserial` here (not `uuid`) is a deliberate exception: this table is never
 referenced externally by ID, is extremely high-volume, and benefits from a compact
 sequential key for storage/index efficiency.
@@ -713,8 +734,9 @@ method cannot leak another tenant's rows. See
 layers are required.
 
 **Platform-admin bypass, and which tables actually need it.** `schools`,
-`audit_logs`, `users`, `parents`, `refresh_tokens`, `password_reset_tokens`, and
-`invitations` carry an additional clause:
+`audit_logs`, `users`, `parents`, `refresh_tokens`, `password_reset_tokens`,
+`invitations`, and (since Phase 1 Step 7) `bus_devices` carry an additional
+clause:
 ```sql
 using (
   school_id = current_setting('app.current_school_id', true)
@@ -725,8 +747,9 @@ using (
 narrow, audited cross-tenant reads — used only where a query is inherently
 pre-tenant by nature: `SUPER_ADMIN` platform tooling on `schools`, credential
 resolution (login-by-identifier, refresh/reset-token-by-hash) on the middle four,
-and invitation-acceptance (lookup by token hash, before the accepting principal's
-tenant is known) on `invitations`, per
+invitation-acceptance (lookup by token hash, before the accepting principal's
+tenant is known) on `invitations`, and GPS device authentication (lookup by
+credential hash, before the device's school is known) on `bus_devices`, per
 [ADR 0010](adr/0010-credential-resolution-rls-bypass.md). **Every table queried
 via `runAsPlatformAdmin` anywhere in the codebase must carry this clause** — a table
 with only the plain `current_school_id` check silently returns zero rows for a

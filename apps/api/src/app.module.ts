@@ -21,6 +21,7 @@ import { BusDevicesModule } from './bus-devices/bus-devices.module';
 import { RoutesModule } from './routes/routes.module';
 import { RouteStopsModule } from './route-stops/route-stops.module';
 import { TripsModule } from './trips/trips.module';
+import { GpsModule } from './gps/gps.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -49,6 +50,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     RoutesModule,
     RouteStopsModule,
     TripsModule,
+    GpsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

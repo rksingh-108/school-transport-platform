@@ -175,8 +175,10 @@ structural tenant lock as students/parents.
 Device endpoints are gated by `buses.read`/`buses.manage`, not a separate
 `devices.*` permission — see
 [security.md §5.2](security.md#52-device--fleet-authorization). No device
-response ever includes a credential/secret field; none exists on the model
-(§5.1 of the same doc).
+*read* response ever includes the credential (only `credentialSetAt`, a
+timestamp) — the raw bearer token is returned exactly once, by
+`POST /devices/:id/credential` (see the GPS / Tracking section below), never
+by `GET`/`PATCH`.
 
 ### Routes / Stops
 
@@ -261,16 +263,28 @@ carries `currentStatus`/`boardedAt`/`droppedOffAt` for every entry in the
 same query — no separate "attendance list" endpoint was added.
 
 ### GPS / Tracking
-| Method | Path | Permission |
-|---|---|---|
-| POST | `/telemetry/gps` | device credential (see below) — ingestion endpoint, not a user-facing one |
-| GET | `/buses/:id/location` | `gps.read` (staff) |
-| GET | `/parent/children/:studentId/bus-location` | parent, own child only |
-| WS | `/ws/tracking` | staff: subscribe by school/bus; parent: subscribe by own-child's-bus only, server-enforced |
 
-Device ingestion uses a distinct auth mechanism (per-device signed credential /
-mTLS client cert in production), never a user session token — see
-[gps.md](gps.md) (to be written) and [security.md](security.md).
+Implemented in Phase 1 Step 7 — `apps/api/src/gps/`. See
+[ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the full
+design (raw-vs-current-location split, device authentication, own-bus
+scoping, realtime architecture). No parent-facing location endpoint exists
+yet — that boundary is Phase 1 Step 8.
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/telemetry/gps` | Device bearer credential (see below) — **not** a staff/parent session | `{latitude, longitude, speedKmh?, heading?, accuracyM?, recordedAt}`. No `schoolId`/`busId`/`deviceId`/`tripId` field exists in this schema — all four are always resolved server-side from the authenticated device and its bus's current `IN_PROGRESS` trip. Returns `{deduplicated: boolean}`; a resend of the exact same `(device, recordedAt)` is a safe no-op, not an error. |
+| POST | `/devices/:id/credential` | `buses.manage` | Issues/rotates the device's bearer credential. Returns `{deviceId, token, issuedAt}` — `token` is shown exactly once and never retrievable again; rotating immediately invalidates the previous token. |
+| GET | `/gps/fleet` | `gps.read` | Current location for every bus in the caller's scope (own bus only for `DRIVER`/`BUS_ATTENDANT`; every bus for other `gps.read` roles) — one call, no per-bus round trip. |
+| GET | `/buses/:busId/location` | `gps.read` | Current location — Redis-backed, falls back to the latest history row after a cold start. `freshness: 'LIVE'\|'STALE'\|'UNKNOWN'`, computed from configurable thresholds (`GPS_LIVE_THRESHOLD_SECONDS`/`GPS_STALE_THRESHOLD_SECONDS`), never from a TTL. |
+| GET | `/buses/:busId/telemetry` | `gps.read` | Bounded history; `?from`, `?to`, `?limit` (default 200, max 500) — never unbounded. |
+| GET | `/trips/:tripId/telemetry` | `gps.read` | Same as above, scoped to one trip's bus. |
+| POST | `/dev/gps-simulator/buses/:busId/tick` | `buses.manage`, **dev/test only** | Pushes one synthetic fix through the real ingestion path for manual verification without hardware. Refuses outright when `NODE_ENV=production`, regardless of caller. |
+
+`DRIVER`/`BUS_ATTENDANT` are scoped to their own currently-`IN_PROGRESS`
+trip's bus on every read above (§2.3 of security.md's "own bus only" row) —
+a request for any other bus in the same school is `403`; a bus in another
+school is `404`. Device credential authentication and its cross-tenant
+guarantees are covered in [security.md §5.1](security.md).
 
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
@@ -320,13 +334,27 @@ None of these are exposed to the parent namespace, ever (see
 
 ## 4. Realtime Contracts
 
-- `/ws/ops` (staff): server pushes `trip.status_changed`, `bus.location_updated`,
-  `attendance.exception`, `device.offline`, `ai_event.created` (Phase 3),
-  `emergency.raised`.
-- `/ws/tracking` (parent, scoped to their child's active trip): server pushes only
-  `bus.location_updated` and `trip_student.status_changed` for that student's
-  bus/trip — the server computes the subscription scope from the authenticated
-  parent's verified relationships, the client cannot request a different scope.
+- **`/realtime/fleet` (Socket.IO namespace, staff only — implemented Phase 1
+  Step 7)**: the connection handshake carries `auth: { token }` (the same
+  in-memory access token used for REST calls); a missing/invalid/parent
+  token is disconnected immediately, no room joined. On success the server
+  — never the client — joins the socket into `school:{schoolId}:fleet`
+  (unscoped `gps.read` roles) or `school:{schoolId}:bus:{busId}` (`DRIVER`/
+  `BUS_ATTENDANT`, their own current trip's bus only, or no room at all if
+  they have no current trip). The client cannot request or discover a room
+  name. Server pushes `bus.location.updated`:
+  ```
+  { busId, tripId, latitude, longitude, speedKmh, heading, accuracyM, recordedAt, receivedAt, freshness }
+  ```
+  emitted only after a fix is accepted AND advances that bus's current
+  location (the monotonic rule — an out-of-order fix is stored but never
+  emitted as "current"). See
+  [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md).
+- A parent-facing realtime channel (scoped to one child's active trip) is
+  explicitly **not built yet** — Phase 1 Step 8. `/ws/ops` and `/ws/tracking`
+  above were this doc's original Phase 0 outline names; the implemented
+  namespace/event names differ slightly (`/realtime/fleet`,
+  `bus.location.updated`) and this section now reflects what actually ships.
 
 ## 5. Versioning
 
