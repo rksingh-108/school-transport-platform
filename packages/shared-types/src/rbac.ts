@@ -77,6 +77,16 @@ export const PERMISSION_KEYS = [
   'safety_events.create',
   'safety_events.read',
   'safety_events.manage',
+  // Phase 2 Step 13: geofences (standalone zones) and safety_rules
+  // (monitoring policies) are separate permission pairs, not folded into
+  // `safety_events.*` — configuring what gets monitored is a distinct,
+  // narrower-audience capability from viewing/triaging the events those
+  // rules produce (mirrors the camera.*-vs-buses.* separation reasoning
+  // from Phase 2 Step 11).
+  'geofences.read',
+  'geofences.manage',
+  'safety_rules.read',
+  'safety_rules.manage',
   'notifications.read',
   'notifications.manage',
   'reports.read',
@@ -162,6 +172,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'safety_events.create',
     'safety_events.read',
     'safety_events.manage',
+    // Phase 2 Step 13 — same reasoning as camera/safety-event grants above.
+    'geofences.read',
+    'geofences.manage',
+    'safety_rules.read',
+    'safety_rules.manage',
     'notifications.read',
     'notifications.manage',
     'reports.read',
@@ -193,6 +208,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'safety_events.create',
     'safety_events.read',
     'safety_events.manage',
+    'geofences.read',
+    'geofences.manage',
+    'safety_rules.read',
+    'safety_rules.manage',
     'reports.read',
     'device_health.read',
     // Operational alert recipient (GPS_STALE/GPS_OFFLINE/TRIP_CANCELLED/
@@ -223,6 +242,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'safety_events.create',
     'safety_events.read',
     'safety_events.manage',
+    // Read-only — a manager can see what's configured but provisioning
+    // geofences/rules stays TRANSPORT_ADMIN/SCHOOL_ADMIN-only, same split
+    // already used for buses/drivers/attendants above.
+    'geofences.read',
+    'safety_rules.read',
     'reports.read',
     'device_health.read',
     // Operational alert recipient — see the TRANSPORT_ADMIN note above.
@@ -251,6 +275,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'safety_events.create',
     'safety_events.read',
     'safety_events.manage',
+    'geofences.read',
+    'safety_rules.read',
     'reports.read',
     'audit_logs.read',
     // Operational alert recipient — see the TRANSPORT_ADMIN note above.
@@ -291,6 +317,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     // management posture (camera.read/emergency.read/incidents.read, never
     // the corresponding manage grants).
     'safety_events.read',
+    'geofences.read',
+    'safety_rules.read',
   ],
   PARENT: [],
 } as const;

@@ -766,7 +766,7 @@ create table safety_events (
   bus_id uuid references buses(id),   -- all three optional and independently
   trip_id uuid references trips(id),  -- nullable; re-verified against the
   camera_id uuid references cameras(id), -- caller's own tenant when supplied
-  type text not null check (type in ('MANUAL_ALERT','EMERGENCY_BUTTON','CAMERA_ALERT','DRIVER_ALERT','ATTENDANT_ALERT','DOOR_OPEN','UNAUTHORIZED_ACCESS','MEDICAL','ACCIDENT','FIGHTING','SMOKE_FIRE','OTHER')),
+  type text not null check (type in ('MANUAL_ALERT','EMERGENCY_BUTTON','CAMERA_ALERT','DRIVER_ALERT','ATTENDANT_ALERT','DOOR_OPEN','UNAUTHORIZED_ACCESS','MEDICAL','ACCIDENT','FIGHTING','SMOKE_FIRE','ROUTE_DEVIATION','GEOFENCE_ENTRY','GEOFENCE_EXIT','EXCESSIVE_SPEED','UNEXPECTED_STOP','OTHER')), -- 5 values added Phase 2 Step 13, system-generated
   severity text not null check (severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
   status text not null default 'NEW' check (status in ('NEW','ACKNOWLEDGED','DISMISSED','ESCALATED','RESOLVED')),
   source text not null check (source in ('HUMAN_OPERATOR','DRIVER','ATTENDANT','DEVICE','CAMERA','SYSTEM')), -- no AI value yet, deliberately
@@ -774,7 +774,7 @@ create table safety_events (
   detected_at timestamptz not null default now(), -- server receipt time
   description text,
   metadata jsonb,   -- small, bounded, operator-entered context only — never raw video/face/biometric data
-  created_by uuid not null references users(id),
+  created_by uuid references users(id), -- nullable since Phase 2 Step 13: null for SYSTEM-sourced events (operational safety rules)
   reviewed_by uuid references users(id),
   reviewed_at timestamptz,
   resolution_note text,
@@ -831,6 +831,59 @@ side effect of resolving the `emergencies` row it escalated into (see
 ADR 0019 Decision 5). `emergency_actions` rows are never updated or
 deleted; a correction is a new row.
 
+### `geofences`, `safety_rules` (Phase 2 Step 13)
+See [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) for
+the full design. `geofences` is standalone, reusable zones (a stop's own
+zone already exists as `route_stops.latitude/longitude/radius_meters` —
+deliberately not duplicated here). `safety_rules` is typed configuration,
+not a generic JSON rules engine.
+```sql
+create table geofences (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  name text not null,
+  type text not null check (type in ('SCHOOL','DEPOT','CUSTOM')), -- no STOP value — see ADR 0020 Decision 2
+  latitude double precision not null,
+  longitude double precision not null,
+  radius_meters integer not null, -- bounded 10-5000 at the application layer
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','ARCHIVED')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on geofences (school_id, status);
+
+create table safety_rules (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  type text not null check (type in ('ROUTE_DEVIATION','GEOFENCE','SPEED','STOP')),
+  enabled boolean not null default false, -- toggled only via /enable, /disable — never a generic PATCH
+  severity text not null check (severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
+  geofence_id uuid references geofences(id),  -- exactly one of geofence_id/route_id/
+  route_id uuid references routes(id),        -- bus_id may be set (or none, meaning
+  bus_id uuid references buses(id),           -- school-wide); enforced by the create schema
+  threshold_meters integer,      -- bounded 10-5000; required for ROUTE_DEVIATION/STOP
+  threshold_speed_kmh integer,   -- bounded 1-200; required for SPEED/STOP; an operational
+                                  -- policy value, never a legal speed limit
+  min_consecutive_points integer not null default 3,  -- bounded 1-20
+  cooldown_seconds integer not null default 300,      -- bounded 30-86400
+  created_by uuid not null references users(id),
+  updated_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on safety_rules (school_id, type);
+create index on safety_rules (school_id, enabled);
+```
+Neither table is ever hard-deleted: `geofences.status` reaches a terminal
+`ARCHIVED` via `POST /geofences/:id/archive` only (which, in the same
+transaction, disables any `safety_rules` row still watching it); a
+`safety_rules` row has no archive state at all and is simply
+enabled/disabled indefinitely. Debounce/cooldown state (candidate/
+confirmed zone or threshold state, last-alert timestamp) is transient
+Redis-only working state, one small JSON key per `(rule, bus)` pair —
+never persisted here; see ADR 0020 Decision 3 for the recovery behavior
+if that key is lost.
+
 ### `audit_logs`
 ```sql
 create table audit_logs (
@@ -874,8 +927,11 @@ mint a short-lived signed URL after an authorization check — see
 
 ## 4. Phase 2/3 Tables (specified at outline level; refined against real hardware)
 
-- `geofences(id, school_id, name, kind[SCHOOL_ZONE|ROUTE_CORRIDOR], polygon geography, ...)`
-- `speed_events(id, school_id, bus_id, trip_id, recorded_speed_kmh, limit_kmh, occurred_at, ...)`
+- `geofences`/`safety_rules` — now real (§3, Phase 2 Step 13); no longer
+  speculative. Operational speed/route-deviation/geofence/stop rules are
+  covered by `safety_rules`, so the separate speculative `speed_events`
+  table below was not built as its own table — a fired SPEED rule creates
+  a `safety_events` row (type `EXCESSIVE_SPEED`) directly instead.
 - `camera_events(id, school_id, camera_id, kind[OFFLINE|OBSTRUCTED|HEARTBEAT], ...)` —
   `cameras` itself now exists (§3, Phase 2 Step 11); this event/history log
   does not yet.

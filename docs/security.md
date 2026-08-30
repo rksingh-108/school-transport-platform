@@ -189,6 +189,8 @@ when those modules ship)
 | emergency.manage | – | ✓ | ✓ | ✓ | ✓ | – | – | – | never |
 | safety_events.create | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | never |
 | safety_events.read/manage | – | ✓ | ✓ | ✓ | ✓ | – | – | read | never |
+| geofences.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
+| safety_rules.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
 | reports.read | – | ✓ | ✓ | ✓ | ✓ | – | – | – | never |
 | audit_logs.read | platform | ✓ | – | – | ✓ | – | – | – | never |
 
@@ -218,6 +220,17 @@ real in the service" pattern already used for `trips.read` on
 `/trips/:id/start`). Neither role ever holds `.read`/`.manage` for either
 domain — triggering an alert is not the same capability as browsing or
 triaging every other one in the school.
+
+`geofences.read`/`geofences.manage` and `safety_rules.read`/
+`safety_rules.manage` were added in Phase 2 Step 13, following the same
+singular-permission-per-domain convention as cameras/safety-events — see
+[ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) Decision
+10. Full read+manage for `SCHOOL_ADMIN`/`TRANSPORT_ADMIN`, read-only for
+`TRANSPORT_MANAGER`/`PRINCIPAL`/`SECURITY`. `DRIVER`/`BUS_ATTENDANT` hold
+neither — unlike safety-events/emergencies, there is no create-only grant
+here at all, since drivers/attendants never configure geofences or rules
+in either direction; they only ever see the resulting `SafetyEvent` rows
+through their existing own-trip scope.
 
 "Never" entries above are not merely unassigned permissions — the parent namespace's
 controllers (`/parent/*`) do not accept a permission grant for camera/ai/incident
@@ -625,6 +638,39 @@ accepted from the client on any route. See §6 for the specific IDOR/RBAC/
 state-machine test scenarios and
 [ADR 0019](adr/0019-safety-events-and-emergency-management.md).
 
+### 5.11 Geofencing / Safety Rule Authorization (Phase 2 Step 13)
+
+Both `GeofencesController` and `SafetyRulesController` are staff-only
+(`@RequireAudience('STAFF')`) — no parent audience exists on either, no
+geofence/rule field exists on any parent DTO, and no geofence/rule event
+is ever pushed on the parent realtime channel. Unlike safety-events/
+emergencies (§5.10), there is no create-only grant for DRIVER/
+BUS_ATTENDANT here at all — both roles hold neither `.read` nor `.manage`
+for either domain (§2.3); a driver/attendant only ever sees the resulting
+system-generated `SafetyEvent` through their existing own-trip scope, and
+has no path to view or configure the rule/geofence that produced it.
+
+Every geofence/rule lookup by id is tenant-scoped via
+`runInTenantContext`, so a cross-tenant id is `404`, never `403`.
+`SafetyRulesService.assertOwnership()` re-verifies any supplied
+`geofenceId`/`routeId`/`busId` against the caller's own tenant before a
+rule can be created or updated referencing it — a School A admin cannot
+create a rule watching a School B geofence/route/bus by supplying its id;
+the response is `404` (existence not revealed), the same pattern as
+camera/bus reassignment checks (§5.9). `schoolId`/`createdBy`/`updatedBy`
+are never accepted from the client on any route.
+
+GPS-derived rule *evaluation* itself requires no additional authorization
+check of its own — it runs inside the existing device-credential-
+authenticated `GpsService.ingest()` path (§5.6), never a client-facing
+endpoint, and only ever reads/writes rule state for the bus the ingesting
+device already belongs to. A rule-evaluation failure (a malformed
+configuration, a Redis outage) is caught and logged inside
+`OperationalSafetyService.evaluate()`'s own per-rule `try`/`catch` and
+never propagates to fail the GPS ingestion request — see
+[ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) Decision
+4. See §6 for the specific IDOR/RBAC/GPS-integration test scenarios.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to
@@ -646,6 +692,27 @@ Mandatory automated coverage before a module is considered done (ties to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 2 Step 13** (`apps/api/src/geofencing/geo.util.spec.ts`,
+11 unit tests, plus `apps/api/test/geofencing.e2e-spec.ts`, 21 e2e tests):
+unit coverage for the Haversine/point-to-segment/point-to-polyline distance
+math (including a real-world two-coordinate sanity check and relative-error
+tolerance around the local-projection approximation's known, documented
+precision limits — see [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)
+Decision 1). E2E coverage: Geofence CRUD/lifecycle (create, bounds
+validation, update, `TRANSPORT_MANAGER` read-only, `DRIVER`/parent denied,
+archive cascades to disable any rule watching it); SafetyRule CRUD/
+validation (type-specific required-field rejection, cross-tenant `busId`
+rejected on create, enable/disable as the only way to toggle `enabled`,
+`DRIVER`/parent denied); cross-tenant IDOR (404 for cross-school geofence/
+rule read and update); real GPS integration via simulated device telemetry
+(GEOFENCE entry/exit with debounce + cooldown + Redis-state-loss recovery,
+SPEED rule triggering a notification, GPS points below the configured
+accuracy threshold skipped, a duplicate GPS point never re-evaluated);
+`/realtime/safety` receiving a system-generated event from a confirmed
+violation; and a direct-`psql`-as-`app_user` RLS re-verification for both
+`geofences` and `safety_rules` (no context → zero rows, School A/B mutual
+exclusion).
 
 **Covered as of Phase 2 Step 12** (`apps/api/test/safety.e2e-spec.ts`, 35
 tests): full SafetyEvent CRUD/lifecycle (create with full staff scope,
@@ -768,6 +835,23 @@ re-verification described above.
   `.create` grant is scoped inside the service to their own currently
   in-progress trip only (§5.10) — there is no code path, correct or buggy,
   by which holding `.create` alone could reach another bus's data.
+- A flood of GPS-derived alerts (alert storm) from noisy/oscillating GPS
+  fixes (Phase 2 Step 13) → mitigated structurally, not by rate limiting:
+  per-rule `minConsecutivePoints` debouncing, a shared per-(rule,bus)
+  cooldown clock regardless of transition direction, and an accuracy
+  filter (`SAFETY_RULES_MAX_ACCURACY_M`) that skips imprecise fixes for
+  rule math entirely — see
+  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)
+  Decisions 3 and 9. Verified directly in the e2e suite (a burst of
+  oscillating-boundary GPS points produces at most one alert per cooldown
+  window, never one per point).
+- A malformed or misconfigured safety rule breaking live GPS tracking
+  (Phase 2 Step 13) → structurally prevented: `OperationalSafetyService`'s
+  per-rule evaluation is wrapped in its own `try`/`catch` inside
+  `GpsService.ingest()`'s own `try`/`catch`, so one bad rule can neither
+  block other rules nor fail the ingestion request itself — see
+  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)
+  Decision 4.
 
 ## 8. Rate Limiting
 

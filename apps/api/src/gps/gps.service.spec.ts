@@ -21,6 +21,7 @@ describe('GpsService.simulateIngest — production lockout', () => {
       configStub as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   }
 

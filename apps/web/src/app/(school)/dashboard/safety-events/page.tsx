@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { createSafetyEvent, listSafetyEvents, SAFETY_EVENT_TYPES, SEVERITIES } from '@/lib/api/safety-events';
+import { createSafetyEvent, listSafetyEvents, SAFETY_EVENT_TYPES, SEVERITIES, SYSTEM_SAFETY_EVENT_TYPES } from '@/lib/api/safety-events';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
@@ -123,7 +123,7 @@ export default function SafetyEventsPage() {
         </Select>
         <Select value={type} onChange={(e) => { setType(e.target.value); resetToFirstPage(); }} className="max-w-[200px]">
           <option value="">All types</option>
-          {SAFETY_EVENT_TYPES.map((t) => (
+          {[...SAFETY_EVENT_TYPES, ...SYSTEM_SAFETY_EVENT_TYPES].map((t) => (
             <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
           ))}
         </Select>

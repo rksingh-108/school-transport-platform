@@ -235,8 +235,39 @@ surface):
    any real external emergency-service integration
    (`CONTACTED_EMERGENCY_SERVICE` only records that an operator logged
    having made contact themselves).
-4. Geofencing (school zone, route corridor) + violation events.
-5. Speed monitoring + violation events.
+4. **Geofencing (school zone, route corridor) + violation events. Speed
+   monitoring + violation events. Done, combined into one module** —
+   `GeofencingModule` (`apps/api/src/geofencing/`): standalone, reusable
+   `Geofence` zones (`SCHOOL`/`DEPOT`/`CUSTOM` — deliberately no `STOP`
+   type, since `RouteStop` already models a stop's own zone) and typed
+   `SafetyRule` configuration (`ROUTE_DEVIATION`/`GEOFENCE`/`SPEED`/`STOP`),
+   evaluated deterministically inside the existing `GpsService.ingest()`
+   boundary — no second telemetry pipeline, no PostGIS. A single generic
+   debounce/cooldown state machine (per-rule `minConsecutivePoints` +
+   shared per-(rule,bus) `cooldownSeconds`), backed by transient Redis
+   state only, confirms a zone-membership or threshold transition before
+   firing — preventing alert storms from GPS noise or boundary
+   oscillation. A fired rule creates a `SafetyEvent` with `source: 'SYSTEM'`
+   through Step 12's existing `SafetyEventsService`/notification/
+   `/realtime/safety` pipeline unchanged — no second alert system, and
+   never an automatic `Emergency` (escalation stays the existing explicit,
+   human-triggered action). See
+   [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md). Staff
+   management UI at `/dashboard/geofences` and `/dashboard/safety-rules`
+   (plain coordinate/radius/threshold number inputs — no map, matching
+   existing route/camera UI conventions). Tests: 11 unit tests (Haversine/
+   point-to-segment/polyline distance math) plus 21 e2e tests (Geofence/
+   SafetyRule CRUD+lifecycle, RBAC, cross-tenant IDOR, real simulated-GPS
+   integration for entry/exit/deviation/speed with debounce+cooldown+
+   Redis-state-loss recovery, notification integration, `/realtime/safety`
+   delivery, RLS) — confirmed both in the e2e suite and live against the
+   running server (staff CRUD/enable-disable, `DRIVER` denied by a real
+   403, parent denied across all four related endpoints via a real
+   authenticated request). **Not done** (explicitly deferred, per this
+   step's own scope): `MISSED_STOP`/`UNAUTHORIZED_ZONE` rule types (not
+   reliably determinable from GPS/route/stop data alone — see ADR 0020
+   Decision 7), true geodesic/PostGIS corridor math, a map-based
+   configuration UI, and any AI/computer-vision detection.
 6. Incident management module (manual incidents first, independent of AI — a
    security/staff-reported incident doesn't require Phase 3 to exist). Distinct
    from the human-operator `SafetyEvent`/`Emergency` workflow above (item 3) —

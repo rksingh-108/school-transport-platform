@@ -19,5 +19,9 @@ import { SafetyGateway } from './safety.gateway';
   imports: [AuthModule],
   controllers: [SafetyEventsController, EmergenciesController],
   providers: [SafetyEventsService, EmergenciesService, SafetyGateway],
+  // SafetyEventsService: consumed by OperationalSafetyService (Phase 2
+  // Step 13, apps/api/src/geofencing/) via createSystemEvent() — geofencing
+  // produces SafetyEvents, it does not own the model.
+  exports: [SafetyEventsService],
 })
 export class SafetyModule {}

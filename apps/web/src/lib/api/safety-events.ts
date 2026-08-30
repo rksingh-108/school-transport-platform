@@ -23,6 +23,14 @@ export const SAFETY_EVENT_TYPES = [
   'SMOKE_FIRE',
   'OTHER',
 ] as const;
+/** System-generated only (Phase 2 Step 13 operational safety rules) — never selectable when manually reporting an event, only for filtering the list. */
+export const SYSTEM_SAFETY_EVENT_TYPES = [
+  'ROUTE_DEVIATION',
+  'GEOFENCE_ENTRY',
+  'GEOFENCE_EXIT',
+  'EXCESSIVE_SPEED',
+  'UNEXPECTED_STOP',
+] as const;
 export const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
 
 export interface SafetyEventListParams {

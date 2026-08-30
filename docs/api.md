@@ -345,6 +345,40 @@ this codebase — see [privacy.md](privacy.md). Realtime updates
 pushed via a dedicated staff-only `/realtime/safety` Socket.IO namespace
 (§4 below) — no polling is required for the dashboard to stay current.
 
+### Geofencing & Safety Rules (Phase 2 Step 13)
+
+Implemented — `apps/api/src/geofencing/`. Deterministic, GPS-derived
+operational rules (geofence entry/exit, route deviation, excessive speed,
+unexpected stop) evaluated at the existing GPS ingestion boundary — no AI,
+no second telemetry pipeline. See
+[ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md). Gated by
+`geofences.read`/`geofences.manage` and `safety_rules.read`/
+`safety_rules.manage`; `DRIVER`/`BUS_ATTENDANT`/`PARENT` hold none of the
+four.
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/geofences` | `geofences.read` | Cursor-paginated; `?status`. |
+| GET | `/geofences/:id` | `geofences.read` | |
+| POST | `/geofences` | `geofences.manage` | `{name, type, latitude, longitude, radiusMeters}` — `type` in `SCHOOL`/`DEPOT`/`CUSTOM` (no `STOP`, see ADR 0020 Decision 2); `radiusMeters` bounded 10-5000. `schoolId` never accepted from the client. |
+| PATCH | `/geofences/:id` | `geofences.manage` | `{name?, latitude?, longitude?, radiusMeters?, status?}` — `status` may only move to `ACTIVE`/`INACTIVE` here; rejected (400) once `ARCHIVED`. |
+| POST | `/geofences/:id/archive` | `geofences.manage` | Terminal — sets `status: 'ARCHIVED'` and, in the same transaction, disables (never deletes) every `SafetyRule` still watching it. |
+| GET | `/safety-rules` | `safety_rules.read` | Cursor-paginated; `?type`, `?enabled`, `?busId`, `?routeId`. |
+| GET | `/safety-rules/:id` | `safety_rules.read` | |
+| POST | `/safety-rules` | `safety_rules.manage` | `{type, severity, geofenceId?, routeId?, busId?, thresholdMeters?, thresholdSpeedKmh?, minConsecutivePoints?, cooldownSeconds?}` — type-specific required fields enforced by the schema (`GEOFENCE`→`geofenceId`, `ROUTE_DEVIATION`→`thresholdMeters`, `SPEED`→`thresholdSpeedKmh`, `STOP`→both); at most one of `geofenceId`/`routeId`/`busId`, each re-verified against the caller's own tenant. Created `enabled: false` — see the dedicated enable endpoint. `schoolId`/`createdBy` never accepted from the client. |
+| PATCH | `/safety-rules/:id` | `safety_rules.manage` | `{severity?, thresholdMeters?, thresholdSpeedKmh?, minConsecutivePoints?, cooldownSeconds?}` — structurally excludes `type` and `enabled`; neither is patchable here. |
+| POST | `/safety-rules/:id/enable` | `safety_rules.manage` | Dedicated toggle; 400 if already enabled. Audited as `SAFETY_RULE_ENABLED`. |
+| POST | `/safety-rules/:id/disable` | `safety_rules.manage` | Dedicated toggle; 400 if already disabled. Audited as `SAFETY_RULE_DISABLED`. |
+
+A rule firing creates a `SafetyEvent` with `source: 'SYSTEM'` via the
+existing Step 12 pipeline — there is no separate "geofence alert" or
+"safety rule alert" endpoint or model; see
+`GET/POST /safety-events` above and
+[ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) Decision
+8. There is no parent-facing geofence or safety-rule endpoint anywhere in
+this codebase, and no geofence/rule field on any parent DTO — see
+[privacy.md](privacy.md).
+
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
 `ParentSelfController`/`ParentTransportController` (`@RequireAudience('PARENT')`,
@@ -414,14 +448,13 @@ their own alerts, never another admin's.
 
 ## 3. Phase 2/3 Endpoint Groups (outlined, not built yet)
 
-`/cameras` (§2, Phase 2 Step 11) and `/safety-events`+`/emergencies` (§2,
-Phase 2 Step 12) are now built. Streaming/recording playback,
-camera-triggered events, AI-produced safety events, and everything below
-remain outlined only:
+`/cameras` (§2, Phase 2 Step 11), `/safety-events`+`/emergencies` (§2,
+Phase 2 Step 12), and `/geofences`+`/safety-rules` (§2, Phase 2 Step 13)
+are now built. Streaming/recording playback, camera-triggered events,
+AI-produced safety events, and everything below remain outlined only:
 
 - `/ai-events`, `/ai-events/:id/review` — `ai_events.read` / `ai_events.review`
 - `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt concept from `/safety-events` (see database.md §4)
-- `/geofences`, `/speed-events` — Phase 2
 
 None of these are exposed to the parent namespace, ever (see
 [privacy.md](privacy.md)).
@@ -487,11 +520,16 @@ None of these are exposed to the parent namespace, ever (see
   school. No `@SubscribeMessage` handler exists, so there is no mechanism
   for a client to request a different room. Server pushes:
   ```
-  safety.event.created   — a SafetyEventDto, on POST /safety-events
+  safety.event.created   — a SafetyEventDto, on POST /safety-events or a fired operational safety rule (Phase 2 Step 13)
   safety.event.updated   — a SafetyEventDto, on any lifecycle transition
   emergency.created      — an EmergencyDto, on POST /emergencies or an escalation
   emergency.updated      — an EmergencyDto, on any lifecycle transition or a new response action
   ```
+  A system-generated event (`source: 'SYSTEM'`, `createdBy: null`) from a
+  fired geofence/route-deviation/speed/stop rule pushes through this exact
+  same `safety.event.created` payload — no second realtime channel was
+  added for operational safety rules; see
+  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md).
   See [ADR 0019](adr/0019-safety-events-and-emergency-management.md).
 - `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
   outline names; the implemented namespace/event names differ

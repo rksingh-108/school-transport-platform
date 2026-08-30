@@ -185,6 +185,18 @@ enum SafetyEventType {
   FIGHTING
   SMOKE_FIRE
   OTHER
+  // Phase 2 Step 13 — deterministic, GPS-derived operational rule
+  // violations (source: SYSTEM). MISSED_STOP/UNAUTHORIZED_ZONE are
+  // deliberately not added: reliably determining "a stop was skipped" needs
+  // more than a GPS point (schedule/attendance correlation), and
+  // "unauthorized zone" would need an authorized/restricted polarity concept
+  // GEOFENCE_ENTRY/EXIT don't have — see
+  // docs/adr/0020-geofencing-and-operational-safety-rules.md.
+  ROUTE_DEVIATION
+  GEOFENCE_ENTRY
+  GEOFENCE_EXIT
+  EXCESSIVE_SPEED
+  UNEXPECTED_STOP
 }
 
 // Shared by SafetyEvent and Emergency — one severity concept, not two
@@ -250,6 +262,40 @@ enum EmergencyActionType {
   DISPATCHED_HELP
   RESOLVED
   OTHER
+}
+
+// Geofencing / operational safety rules (Phase 2 Step 13) — see
+// Geofence/SafetyRule below and
+// docs/adr/0020-geofencing-and-operational-safety-rules.md.
+
+// Deliberately just SCHOOL/DEPOT/CUSTOM — a "STOP" geofence is NOT a
+// fourth value here. RouteStop already has latitude/longitude/radiusMeters
+// (Phase 1 Step 4); a GEOFENCE-type SafetyRule watching a stop would
+// duplicate coordinates the schema already has. Stop-corridor proximity is
+// instead read directly from RouteStop/TripStop by the ROUTE_DEVIATION and
+// STOP rule types.
+enum GeofenceType {
+  SCHOOL
+  DEPOT
+  CUSTOM
+}
+
+// ACTIVE/INACTIVE mirror Bus/Camera's reversible operational toggle.
+// ARCHIVED is terminal, set only via POST /geofences/:id/archive — a
+// geofence is never hard-deleted (a SafetyRule may reference it, and past
+// SafetyEvents may reference the rule that referenced it), same
+// never-hard-delete-historically-referenced-rows convention as Route/Bus.
+enum GeofenceStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum SafetyRuleType {
+  ROUTE_DEVIATION
+  GEOFENCE
+  SPEED
+  STOP
 }
 
 enum Shift {
@@ -471,6 +517,8 @@ model School {
   safetyEvents           SafetyEvent[]
   emergencies            Emergency[]
   emergencyActions       EmergencyAction[]
+  geofences              Geofence[]
+  safetyRules            SafetyRule[]
   drivers                Driver[]
   attendants             Attendant[]
   routes                 Route[]
@@ -528,6 +576,8 @@ model User {
   emergenciesInitiated     Emergency[]       @relation("EmergencyInitiatedBy")
   emergenciesResolved      Emergency[]       @relation("EmergencyResolvedBy")
   emergencyActions         EmergencyAction[]
+  safetyRulesCreated       SafetyRule[]      @relation("SafetyRuleCreatedBy")
+  safetyRulesUpdated       SafetyRule[]      @relation("SafetyRuleUpdatedBy")
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -685,6 +735,7 @@ model Bus {
   cameras      Camera[]
   safetyEvents SafetyEvent[]
   emergencies  Emergency[]
+  safetyRules  SafetyRule[]
 
   @@unique([schoolId, registrationNumber])
   @@unique([schoolId, fleetNumber])
@@ -815,7 +866,11 @@ model SafetyEvent {
   // data, or biometric identifiers (enforced by size limits at the Zod
   // layer, not just convention — see SafetyEventsService).
   metadata       Json?
-  createdBy      String            @map("created_by")
+  // Nullable since Phase 2 Step 13: a deterministic operational rule
+  // (source: SYSTEM) creates events with no human actor at all — the
+  // NOT NULL constraint from Step 12 assumed every event had one, which
+  // was only ever true for human/operator/driver/attendant-sourced events.
+  createdBy      String?           @map("created_by")
   reviewedBy     String?           @map("reviewed_by")
   reviewedAt     DateTime?         @map("reviewed_at")
   resolutionNote String?           @map("resolution_note")
@@ -826,7 +881,7 @@ model SafetyEvent {
   bus       Bus?       @relation(fields: [busId], references: [id])
   trip      Trip?      @relation(fields: [tripId], references: [id])
   camera    Camera?    @relation(fields: [cameraId], references: [id])
-  creator   User       @relation("SafetyEventCreatedBy", fields: [createdBy], references: [id])
+  creator   User?      @relation("SafetyEventCreatedBy", fields: [createdBy], references: [id])
   reviewer  User?      @relation("SafetyEventReviewedBy", fields: [reviewedBy], references: [id])
   emergency Emergency?
 
@@ -900,6 +955,87 @@ model EmergencyAction {
   @@map("emergency_actions")
 }
 
+// ---------------------------------------------------------------------------
+// Geofencing / operational safety rules (Phase 2 Step 13)
+// ---------------------------------------------------------------------------
+
+// A standalone circular zone (Haversine center + radius, no PostGIS) —
+// reusable across any number of SafetyRules, never scoped to a specific
+// bus/trip/route itself (see SafetyRule for that). Never hard-deleted; see
+// GeofenceStatus.
+model Geofence {
+  id           String         @id @default(uuid())
+  schoolId     String         @map("school_id")
+  name         String
+  type         GeofenceType
+  latitude     Float
+  longitude    Float
+  radiusMeters Int            @map("radius_meters")
+  status       GeofenceStatus @default(ACTIVE)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  school School       @relation(fields: [schoolId], references: [id])
+  rules  SafetyRule[]
+
+  @@index([schoolId, status])
+  @@map("geofences")
+}
+
+// A monitoring policy, not a place. `geofenceId` is required for `GEOFENCE`
+// type (validated at the Zod/service layer, not a DB CHECK) and unused by
+// the other three types, which instead read the active trip's own
+// route/stop/GPS data directly (see OperationalSafetyService). `routeId`/
+// `busId` optionally narrow which trips this rule applies to — both null
+// means "every trip in the school." Only typed, bounded fields — no
+// arbitrary JSON configuration, per the step's own instruction.
+model SafetyRule {
+  id       String         @id @default(uuid())
+  schoolId String         @map("school_id")
+  type     SafetyRuleType
+  enabled  Boolean        @default(true)
+  severity Severity
+
+  geofenceId String? @map("geofence_id") // required for type = GEOFENCE
+  routeId    String? @map("route_id") // optional scope narrowing
+  busId      String? @map("bus_id") // optional scope narrowing
+
+  // ROUTE_DEVIATION: max allowed distance (meters) from the active trip's
+  // planned route/stop corridor before a point counts as a deviation
+  // candidate.
+  thresholdMeters   Int? @map("threshold_meters")
+  // SPEED: max allowed speed (km/h) before a point counts as a violation
+  // candidate. STOP: max speed (km/h) still considered "stationary" — reused
+  // rather than adding a near-identical fourth field; see
+  // OperationalSafetyService's per-type interpretation and the ADR.
+  thresholdSpeedKmh Int? @map("threshold_speed_kmh")
+
+  // Shared debounce/cooldown — same two knobs regardless of rule type, to
+  // avoid a proliferation of type-specific timing fields. A raw violation
+  // must be observed on this many CONSECUTIVE accepted GPS points before one
+  // SafetyEvent is created; after firing, no further event of the same type
+  // for this rule+bus fires again until this many seconds have passed AND
+  // the state has recovered and re-violated. See ADR 0020.
+  minConsecutivePoints Int @default(3) @map("min_consecutive_points")
+  cooldownSeconds      Int @default(300) @map("cooldown_seconds")
+
+  createdBy String   @map("created_by")
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school   School    @relation(fields: [schoolId], references: [id])
+  geofence Geofence? @relation(fields: [geofenceId], references: [id])
+  route    Route?    @relation(fields: [routeId], references: [id])
+  bus      Bus?      @relation(fields: [busId], references: [id])
+  creator  User      @relation("SafetyRuleCreatedBy", fields: [createdBy], references: [id])
+  updater  User?     @relation("SafetyRuleUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@index([schoolId, type])
+  @@index([schoolId, enabled])
+  @@map("safety_rules")
+}
+
 model Driver {
   id            String       @id @default(uuid())
   schoolId      String       @map("school_id")
@@ -962,9 +1098,10 @@ model Route {
   updatedAt   DateTime       @updatedAt @map("updated_at")
   deletedAt   DateTime?      @map("deleted_at")
 
-  school School      @relation(fields: [schoolId], references: [id])
-  stops  RouteStop[]
-  trips  Trip[]
+  school      School       @relation(fields: [schoolId], references: [id])
+  stops       RouteStop[]
+  trips       Trip[]
+  safetyRules SafetyRule[]
 
   @@unique([schoolId, code])
   @@map("routes")

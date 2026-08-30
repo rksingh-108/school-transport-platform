@@ -102,6 +102,14 @@ export const envSchema = z.object({
   // MOCK is a clearly-labeled dev/test simulator, explicitly rejected in
   // production below, the same discipline as the GPS dev simulator.
   CAMERA_STREAM_PROVIDER: z.enum(['NOT_CONFIGURED', 'MOCK']).default('NOT_CONFIGURED'),
+
+  // Geofencing / operational safety rules (Phase 2 Step 13) — see
+  // docs/adr/0020-geofencing-and-operational-safety-rules.md. A GPS fix
+  // less precise than this is skipped for rule evaluation entirely (still
+  // stored normally) — not accurate enough to trust for corridor/geofence
+  // math. Devices that don't report accuracy at all are still evaluated
+  // (there is nothing to compare against).
+  SAFETY_RULES_MAX_ACCURACY_M: z.coerce.number().int().positive().default(100),
 });
 
 export type Env = z.infer<typeof envSchema>;

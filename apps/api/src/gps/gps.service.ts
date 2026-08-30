@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import type { BusLocationDto, BusLocationUpdatedEvent, GpsPointDto } from '@school-transport/shared-types';
@@ -11,6 +11,7 @@ import type { AuthenticatedPrincipal } from '../auth/types/principal';
 import type { Env } from '../config/env.schema';
 import { GpsGateway } from './gps.gateway';
 import type { AuthenticatedDevice } from './types/device-principal';
+import { OperationalSafetyService } from '../geofencing/operational-safety.service';
 
 type GpsPointRow = {
   id: bigint;
@@ -51,6 +52,8 @@ type GpsScope = { scope: 'ALL' } | { scope: 'BUS'; busId: string | null };
  */
 @Injectable()
 export class GpsService {
+  private readonly logger = new Logger(GpsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
@@ -58,6 +61,7 @@ export class GpsService {
     private readonly config: ConfigService<Env, true>,
     private readonly domainEvents: DomainEventsService,
     @Inject(forwardRef(() => GpsGateway)) private readonly gateway: GpsGateway,
+    private readonly operationalSafety: OperationalSafetyService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -125,16 +129,43 @@ export class GpsService {
       tx.busDevice.update({ where: { id: device.id }, data: { lastSeenAt: now } }),
     );
 
-    await this.maybeAdvanceCurrentLocation(device.schoolId, device.busId, {
+    const speedKmh = inserted.speedKmh ? Number(inserted.speedKmh) : null;
+    const accuracyM = inserted.accuracyM ? Number(inserted.accuracyM) : null;
+
+    const advanced = await this.maybeAdvanceCurrentLocation(device.schoolId, device.busId, {
       tripId: inserted.tripId,
       latitude: inserted.latitude,
       longitude: inserted.longitude,
-      speedKmh: inserted.speedKmh ? Number(inserted.speedKmh) : null,
+      speedKmh,
       heading: inserted.heading ? Number(inserted.heading) : null,
-      accuracyM: inserted.accuracyM ? Number(inserted.accuracyM) : null,
+      accuracyM,
       deviceTime: recordedAt,
       receivedAt: inserted.receivedAt,
     });
+
+    // Phase 2 Step 13: deterministic operational safety rules (geofence/
+    // route-deviation/speed/stop), evaluated only for a fix that genuinely
+    // advanced the current-location snapshot — never for an out-of-order or
+    // buffered late point. Awaited (not fire-and-forget) so the ingestion
+    // response reflects a fully-processed point — but isolated in its own
+    // try/catch so a rule-processing error (a malformed rule, a Redis
+    // hiccup) can never fail the ingestion request itself; the fix is
+    // already durably persisted above regardless of what happens here.
+    if (advanced) {
+      try {
+        await this.operationalSafety.evaluate({
+          schoolId: device.schoolId,
+          busId: device.busId,
+          tripId: inserted.tripId,
+          latitude: inserted.latitude,
+          longitude: inserted.longitude,
+          speedKmh,
+          accuracyM,
+        });
+      } catch (error) {
+        this.logger.error(`Operational safety rule evaluation failed for bus ${device.busId}`, error as Error);
+      }
+    }
 
     return { deduplicated: false };
   }
@@ -169,18 +200,26 @@ export class GpsService {
     }
   }
 
-  /** Monotonic-forward-only rule (item 9): an older or equal fix never overwrites a newer current location, even though it's still persisted to Postgres above. */
+  /**
+   * Monotonic-forward-only rule (item 9): an older or equal fix never
+   * overwrites a newer current location, even though it's still persisted
+   * to Postgres above. Returns whether this candidate actually advanced the
+   * snapshot — `GpsService.ingest()` only evaluates operational safety
+   * rules (Phase 2 Step 13) when it did, so an out-of-order/buffered late
+   * point can never trigger a "live" rule evaluation against stale
+   * realtime state.
+   */
   private async maybeAdvanceCurrentLocation(
     schoolId: string,
     busId: string,
     candidate: Omit<CurrentLocationSnapshot, 'deviceTime' | 'receivedAt'> & { deviceTime: Date; receivedAt: Date },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = this.redisKey(schoolId, busId);
     const existingRaw = await this.redis.client.get(key);
     if (existingRaw) {
       const existing = JSON.parse(existingRaw) as CurrentLocationSnapshot;
       if (new Date(existing.deviceTime).getTime() >= candidate.deviceTime.getTime()) {
-        return;
+        return false;
       }
     }
 
@@ -209,6 +248,7 @@ export class GpsService {
       freshness: this.computeFreshness(candidate.deviceTime, new Date()),
     };
     this.gateway.emitLocationUpdate(schoolId, busId, event);
+    return true;
   }
 
   // ---------------------------------------------------------------------

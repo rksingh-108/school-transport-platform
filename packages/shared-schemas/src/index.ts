@@ -17,3 +17,5 @@ export * from './notifications';
 export * from './cameras';
 export * from './safety-events';
 export * from './emergencies';
+export * from './geofences';
+export * from './safety-rules';

@@ -45,10 +45,10 @@ describe('RBAC permission matrix (docs/security.md)', () => {
     }
   });
 
-  it('DRIVER and BUS_ATTENDANT never receive camera, ai_events, or incidents permissions', () => {
+  it('DRIVER and BUS_ATTENDANT never receive camera, ai_events, incidents, geofence, or safety-rule permissions', () => {
     for (const role of ['DRIVER', 'BUS_ATTENDANT'] as const) {
       const permissions = DEFAULT_ROLE_PERMISSIONS[role];
-      const forbiddenPrefixes = ['camera.', 'ai_events.', 'incidents.', 'audit_logs.'];
+      const forbiddenPrefixes = ['camera.', 'ai_events.', 'incidents.', 'audit_logs.', 'geofences.', 'safety_rules.'];
       for (const permission of permissions) {
         expect(forbiddenPrefixes.some((prefix) => permission.startsWith(prefix))).toBe(false);
       }

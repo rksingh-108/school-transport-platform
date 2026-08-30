@@ -24,13 +24,13 @@ type SafetyEventRow = {
   detectedAt: Date;
   description: string | null;
   metadata: Prisma.JsonValue;
-  createdBy: string;
+  createdBy: string | null;
   reviewedBy: string | null;
   reviewedAt: Date | null;
   resolutionNote: string | null;
   createdAt: Date;
   updatedAt: Date;
-  creator: { fullName: string };
+  creator: { fullName: string } | null;
   reviewer: { fullName: string } | null;
   emergency: { id: string } | null;
 };
@@ -325,6 +325,63 @@ export class SafetyEventsService {
     await tx.safetyEvent.updateMany({ where: { id: safetyEventId, status: 'ESCALATED' }, data: { status: 'RESOLVED' } });
   }
 
+  /**
+   * Creates a `source: 'SYSTEM'` SafetyEvent with no human actor — called
+   * only by `OperationalSafetyService` when a deterministic geofence/
+   * route-deviation/speed/stop rule fires (Phase 2 Step 13). Bypasses the
+   * principal-based own-trip scoping entirely: there is no principal, and
+   * `schoolId`/`busId`/`tripId` are already resolved server-side by the GPS
+   * ingestion pipeline that owns this call, never client input. Audited
+   * with `actorType: 'SYSTEM'` — a real, pre-reserved audit actor type,
+   * not `USER` with a null id. Deliberately NOT wrapped in the caller's
+   * try/catch — this method's own errors are the caller's responsibility to
+   * isolate (see OperationalSafetyService), so ingestion never breaks even
+   * if this throws.
+   */
+  async createSystemEvent(params: {
+    schoolId: string;
+    busId: string;
+    tripId: string | null;
+    type: 'ROUTE_DEVIATION' | 'GEOFENCE_ENTRY' | 'GEOFENCE_EXIT' | 'EXCESSIVE_SPEED' | 'UNEXPECTED_STOP';
+    severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    description: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<SafetyEventDto> {
+    const row = await this.prisma.runInTenantContext(params.schoolId, (tx) =>
+      tx.safetyEvent.create({
+        data: {
+          schoolId: params.schoolId,
+          busId: params.busId,
+          tripId: params.tripId,
+          type: params.type,
+          severity: params.severity,
+          source: 'SYSTEM',
+          occurredAt: new Date(),
+          description: params.description,
+          metadata: params.metadata as Prisma.InputJsonValue | undefined,
+          createdBy: null,
+        },
+        include: ROW_INCLUDE,
+      }),
+    );
+
+    await this.auditService.record(params.schoolId, {
+      actorType: 'SYSTEM',
+      action: 'SAFETY_EVENT_CREATED',
+      subjectType: 'SafetyEvent',
+      subjectId: row.id,
+      metadata: { type: row.type, severity: row.severity, source: 'SYSTEM' },
+    });
+
+    if (row.severity === 'CRITICAL') {
+      this.domainEvents.publish({ type: 'SAFETY_EVENT_CRITICAL', schoolId: params.schoolId, safetyEventId: row.id });
+    }
+
+    const dto = this.toDto(row);
+    this.safetyGateway.emitSafetyEventCreated(params.schoolId, dto);
+    return dto;
+  }
+
   private async transition(
     principal: AuthenticatedPrincipal,
     id: string,
@@ -357,7 +414,7 @@ export class SafetyEventsService {
       description: row.description,
       metadata: (row.metadata as Record<string, unknown> | null) ?? null,
       createdBy: row.createdBy,
-      createdByName: row.creator.fullName,
+      createdByName: row.creator?.fullName ?? 'System',
       reviewedBy: row.reviewedBy,
       reviewedByName: row.reviewer?.fullName ?? null,
       reviewedAt: row.reviewedAt?.toISOString() ?? null,

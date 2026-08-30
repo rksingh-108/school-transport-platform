@@ -103,9 +103,8 @@ school-transport-platform/
 │   │   │   │   ├── trips/               # one NestJS module — TripsController (+ read-only trip-stops), TripStudentsController (manifest), and AttendanceController (boarding/drop-off/absence/correction, Phase 1 Step 6) share it rather than each getting a separate module, since all three are tightly coupled to Trip and none needs independent app-level wiring
 │   │   │   │   ├── attendance/          # placeholder — actual implementation lives in trips/ (see above); reserved for a future split if attendance outgrows the shared module
 │   │   │   │   ├── gps/                 # telemetry ingestion + current-location state + realtime gateway — implemented Phase 1 Step 7, see ADR 0014
-│   │   │   │   ├── geofencing/          # phase 2
-│   │   │   │   ├── speed-monitoring/    # phase 2
-│   │   │   │   ├── cameras/             # phase 2
+│   │   │   │   ├── geofencing/          # Geofence/SafetyRule config + deterministic GPS-derived rule evaluation — implemented Phase 2 Step 13, see ADR 0020. Speed-rule handling lives here too (a SafetyRule type, not a separate module) — the originally-outlined standalone "speed-monitoring" module was never built.
+│   │   │   │   ├── cameras/             # camera inventory/lifecycle/device-auth — implemented Phase 2 Step 11, see ADR 0018
 │   │   │   │   ├── ai-events/           # phase 3 (consumes ai-service)
 │   │   │   │   ├── incidents/           # phase 2/3
 │   │   │   │   ├── emergency/           # phase 2
@@ -236,6 +235,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `gps` | live + historical device telemetry | camera data |
 | `cameras` (Phase 2 Step 11) | camera identity/lifecycle/health, layered on `bus-devices`' shared device-credential mechanism — never a second, parallel device-identity table | recordings (would be `files`, once built — not yet); any streaming/AI/incident data |
 | `safety` (Phase 2 Step 12) | `SafetyEvent`/`Emergency`/`EmergencyAction` — human/operator-reported observations, triage, and the emergency-response workflow, in one module since the two are tightly coupled by escalation | AI-generated events (owned by future `ai-events`); the final human-adjudicated incident record (owned by future `incidents`); any camera footage/recording |
+| `geofencing` (Phase 2 Step 13) | `Geofence`/`SafetyRule` configuration, deterministic GPS-derived rule evaluation (`OperationalSafetyService`), and transient per-(rule,bus) debounce/cooldown state in Redis | GPS ingestion itself (owned by `gps`, which calls into this module, not the reverse); the resulting `SafetyEvent` record (owned by `safety`, via `createSystemEvent`) — this module creates events through that service, never a parallel table; any AI/computer-vision detection |
 | `ai-events` | AI-generated candidate events | final incident record (owned by `incidents`) |
 | `incidents` | human-adjudicated incident lifecycle | raw AI confidence internals |
 | `notifications` | templates, preferences, delivery log | the business event that triggered it |

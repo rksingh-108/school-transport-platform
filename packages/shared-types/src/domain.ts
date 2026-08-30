@@ -229,7 +229,12 @@ export interface SafetyEventDto {
     | 'ACCIDENT'
     | 'FIGHTING'
     | 'SMOKE_FIRE'
-    | 'OTHER';
+    | 'OTHER'
+    | 'ROUTE_DEVIATION'
+    | 'GEOFENCE_ENTRY'
+    | 'GEOFENCE_EXIT'
+    | 'EXCESSIVE_SPEED'
+    | 'UNEXPECTED_STOP';
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   status: 'NEW' | 'ACKNOWLEDGED' | 'DISMISSED' | 'ESCALATED' | 'RESOLVED';
   source: 'HUMAN_OPERATOR' | 'DRIVER' | 'ATTENDANT' | 'DEVICE' | 'CAMERA' | 'SYSTEM';
@@ -237,7 +242,9 @@ export interface SafetyEventDto {
   detectedAt: string;
   description: string | null;
   metadata: Record<string, unknown> | null;
-  createdBy: string;
+  // Null for a SYSTEM-sourced event (a deterministic rule violation) — see
+  // docs/adr/0020-geofencing-and-operational-safety-rules.md.
+  createdBy: string | null;
   createdByName: string;
   reviewedBy: string | null;
   reviewedByName: string | null;
@@ -262,6 +269,49 @@ export interface EmergencyActionDto {
  * codebase (docs/privacy.md). `actions` is the full append-only response
  * log; nothing in it is ever deleted or edited.
  */
+/**
+ * Staff-only — a geofence is never exposed to parents in any form
+ * (docs/privacy.md). Deliberately no `SCHOOL_ADMIN`-only "STOP" type — a
+ * stop's zone is `RouteStop.latitude/longitude/radiusMeters`, not a
+ * Geofence row (see docs/adr/0020-geofencing-and-operational-safety-rules.md).
+ */
+export interface GeofenceDto {
+  id: string;
+  name: string;
+  type: 'SCHOOL' | 'DEPOT' | 'CUSTOM';
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  status: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A monitoring policy, not a place — see `GeofenceDto`. Only the fields
+ * relevant to `type` are ever meaningfully set; the others are `null`.
+ * Staff-only, never exposed to parents.
+ */
+export interface SafetyRuleDto {
+  id: string;
+  type: 'ROUTE_DEVIATION' | 'GEOFENCE' | 'SPEED' | 'STOP';
+  enabled: boolean;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  geofenceId: string | null;
+  routeId: string | null;
+  busId: string | null;
+  thresholdMeters: number | null;
+  thresholdSpeedKmh: number | null;
+  minConsecutivePoints: number;
+  cooldownSeconds: number;
+  createdBy: string;
+  createdByName: string;
+  updatedBy: string | null;
+  updatedByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EmergencyDto {
   id: string;
   tripId: string | null;

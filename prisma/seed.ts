@@ -867,6 +867,56 @@ async function seedDemoSchool() {
     },
   });
 
+  // Geofencing + operational safety rules (Phase 2 Step 13) — a school
+  // premises zone, a depot zone, one enabled ROUTE_DEVIATION rule
+  // (school-wide), one enabled GEOFENCE rule (watching the depot), and one
+  // DISABLED rule, so the dashboard shows all three states. Coordinates
+  // reuse this seed's existing Bengaluru-area stop coordinates for realism.
+  // No fake AI events, no fake camera detections — see
+  // docs/adr/0020-geofencing-and-operational-safety-rules.md.
+  await prisma.geofence.create({
+    data: { schoolId: school.id, name: 'School Premises', type: 'SCHOOL', latitude: 12.9716, longitude: 77.5946, radiusMeters: 200 },
+  });
+  const depotGeofence = await prisma.geofence.create({
+    data: { schoolId: school.id, name: 'Bus Depot', type: 'DEPOT', latitude: 12.95, longitude: 77.62, radiusMeters: 150 },
+  });
+  await prisma.safetyRule.create({
+    data: {
+      schoolId: school.id,
+      type: 'ROUTE_DEVIATION',
+      enabled: true,
+      severity: 'HIGH',
+      thresholdMeters: 300,
+      minConsecutivePoints: 3,
+      cooldownSeconds: 300,
+      createdBy: schoolAdmin.id,
+    },
+  });
+  await prisma.safetyRule.create({
+    data: {
+      schoolId: school.id,
+      type: 'GEOFENCE',
+      enabled: true,
+      severity: 'MEDIUM',
+      geofenceId: depotGeofence.id,
+      minConsecutivePoints: 2,
+      cooldownSeconds: 300,
+      createdBy: schoolAdmin.id,
+    },
+  });
+  await prisma.safetyRule.create({
+    data: {
+      schoolId: school.id,
+      type: 'SPEED',
+      enabled: false,
+      severity: 'CRITICAL',
+      thresholdSpeedKmh: 60,
+      minConsecutivePoints: 3,
+      cooldownSeconds: 300,
+      createdBy: schoolAdmin.id,
+    },
+  });
+
   return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };
 }
 
@@ -1115,6 +1165,24 @@ async function seedSchoolB() {
       source: 'HUMAN_OPERATOR',
       occurredAt: new Date(),
       description: 'Seed data: routine manual note.',
+      createdBy: admin.id,
+    },
+  });
+
+  // One geofence + one enabled rule (Phase 2 Step 13) — cross-tenant
+  // isolation fixture, same reasoning as the safety event above.
+  const depotGeofenceB = await prisma.geofence.create({
+    data: { schoolId: school.id, name: 'Bus Depot (School B)', type: 'DEPOT', latitude: 19.05, longitude: 72.85, radiusMeters: 150 },
+  });
+  await prisma.safetyRule.create({
+    data: {
+      schoolId: school.id,
+      type: 'GEOFENCE',
+      enabled: true,
+      severity: 'MEDIUM',
+      geofenceId: depotGeofenceB.id,
+      minConsecutivePoints: 2,
+      cooldownSeconds: 300,
       createdBy: admin.id,
     },
   });

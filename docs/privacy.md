@@ -42,7 +42,8 @@ requirements this document does not attempt to interpret authoritatively.
 | GPS points | Bus device | School staff (`gps.read`); parent sees only current/derived location for own child's active trip, never raw historical trails | Raw points: short window (default 90 days) then aggregated/discarded; live state not retained beyond trip completion in derived form |
 | Camera inventory & metadata (Phase 2 Step 11) | School staff (registration) | `camera.read`/`camera.manage` roles only; **never parents** | Kept for the fleet asset's lifetime, same as `buses`/`bus_devices` — not footage, see below |
 | Camera footage/clips/streaming (Phase 2, not yet built) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
-| Safety events & emergencies (Phase 2 Step 12) | Human operator/driver/attendant, own-trip-scoped for the latter two | `safety_events.*`/`emergency.*` roles only; **never parents** | Never purged/hard-deleted — operational history, see §4 |
+| Safety events & emergencies (Phase 2 Step 12) | Human operator/driver/attendant, own-trip-scoped for the latter two; system-generated for a fired operational safety rule (Phase 2 Step 13) | `safety_events.*`/`emergency.*` roles only; **never parents** | Never purged/hard-deleted — operational history, see §4 |
+| Geofences & safety rules (Phase 2 Step 13) | School staff (configuration only) | `geofences.*`/`safety_rules.*` roles only; **never parents, never drivers/attendants** | Geofences never hard-deleted once referenced (terminal `ARCHIVED` status); safety rules kept indefinitely, enabled/disabled only. Transient debounce/cooldown state lives in Redis only, never retained as history — see [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) |
 | AI safety events (Phase 3) | AI service | `ai_events.read/review` roles only | Tied to incident retention if escalated; otherwise short-lived |
 | Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
@@ -184,6 +185,17 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
   that would be a new, deliberately-designed parent-safe notification
   template — never exposure of the internal `SafetyEvent`/`Emergency`
   object).
+- Geofences or safety rules, in any form (Phase 2 Step 13) — no
+  parent-audience route or DTO field exists for either `Geofence` or
+  `SafetyRule`, and no geofence/rule event is ever pushed on the parent
+  realtime channel. A system-generated safety event produced by a fired
+  rule (e.g. exiting a school geofence, exceeding a configured speed
+  threshold) is subject to the exact same boundary as any other
+  `SafetyEvent` above — a parent is never told a rule fired, what the
+  rule's configuration is, or that geofencing/rule evaluation exists at
+  all; their transport tracking view continues to show only the
+  pre-existing safe location summary, unchanged by this step (see
+  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)).
 - AI-generated events or confidence scores.
 - Incident records or investigation notes.
 - Any other student's data, including siblings' classmates on the same bus.
