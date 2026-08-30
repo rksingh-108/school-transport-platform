@@ -83,16 +83,32 @@ enum StudentStatus {
   GRADUATED
 }
 
+// ACTIVE: in normal service.
+// INACTIVE: temporarily withdrawn from service by a school (e.g. off-season,
+//   awaiting a spare part) — reversible via a normal status update.
+// MAINTENANCE: temporarily out of service for repair/inspection — reversible.
+// RETIRED: permanently decommissioned — the terminal state, set only via the
+//   dedicated archive endpoint (never a plain status update), mirroring how
+//   Student.status's INACTIVE-on-archive works. See docs/security.md.
 enum BusStatus {
   ACTIVE
+  INACTIVE
   MAINTENANCE
   RETIRED
 }
 
+// Renamed from the Phase 0 placeholder values (GPS/CAMERA/EDGE_AI_BOX) to
+// match the names actually specified when this module was built (Phase 1
+// Step 3) — no rows existed under the old names, so this is a same-migration
+// rename, not a data migration. CAMERA_CONTROLLER (a Phase 2 device type) is
+// deliberately not added yet — adding an enum value for a device type this
+// phase does nothing with would be exactly the kind of speculative field the
+// project's anti-over-engineering principle rules out; it's cheap to add
+// later, in the same migration that actually starts using it.
 enum DeviceType {
-  GPS
-  CAMERA
-  EDGE_AI_BOX
+  GPS_TRACKER
+  EDGE_COMPUTER
+  NETWORK_GATEWAY
 }
 
 enum DeviceStatus {
@@ -394,14 +410,21 @@ model ParentStudent {
 model Bus {
   id                 String    @id @default(uuid())
   schoolId           String    @map("school_id")
+  // Internal/operational identifier (e.g. "Bus 7") — distinct from the legal
+  // registration number; optional since a school may not assign one, but
+  // unique per school when it is set (Postgres treats each NULL as distinct
+  // in a unique index, so multiple buses may share "no fleet number yet").
+  fleetNumber        String?   @map("fleet_number")
   registrationNumber String    @map("registration_number")
   capacity           Int
   make               String?
   model              String?
+  manufactureYear    Int?      @map("manufacture_year")
   status             BusStatus @default(ACTIVE)
   permitExpiry       DateTime? @map("permit_expiry") @db.Date
   insuranceExpiry    DateTime? @map("insurance_expiry") @db.Date
   fitnessExpiry      DateTime? @map("fitness_expiry") @db.Date
+  notes              String?
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
   deletedAt          DateTime? @map("deleted_at")
@@ -413,6 +436,7 @@ model Bus {
   gpsPoints GpsPoint[]
 
   @@unique([schoolId, registrationNumber])
+  @@unique([schoolId, fleetNumber])
   @@map("buses")
 }
 
@@ -422,6 +446,14 @@ model BusDevice {
   busId            String       @map("bus_id")
   deviceType       DeviceType   @map("device_type")
   externalDeviceId String       @map("external_device_id")
+  firmwareVersion  String?      @map("firmware_version")
+  // Device-specific configuration (e.g. reporting interval), distinct from
+  // lastHealth (a telemetry-derived snapshot no ingestion pipeline writes to
+  // yet — see docs/roadmap.md). No credential/secret field exists on this
+  // model: there is no real device-provisioning flow to issue one against
+  // yet, and adding a secret column nothing populates or reads would be a
+  // fake abstraction, not a security control. See docs/security.md#device-security.
+  metadata         Json?
   status           DeviceStatus @default(ACTIVE)
   lastSeenAt       DateTime?    @map("last_seen_at")
   lastHealth       Json?        @map("last_health")
@@ -453,6 +485,7 @@ model Driver {
   user   User   @relation(fields: [userId], references: [id])
   trips  Trip[]
 
+  @@unique([schoolId, licenseNumber])
   @@map("drivers")
 }
 

@@ -240,35 +240,58 @@ by token hash before the caller's tenant is known, the same pre-tenant-resolutio
 pattern as `refresh_tokens`/`password_reset_tokens`.
 
 ### `buses`
+Implemented in Phase 1 Step 3 (`BusesModule`) with the fields actually needed
+by the admin UI's create/edit/list/filter screens — `fleet_number` is the
+school's own internal identifier (e.g. "Bus 7"), distinct from the legal
+`registration_number`; both are unique per school, and `fleet_number` allows
+multiple `NULL`s (Postgres treats each `NULL` as distinct in a unique index)
+since not every school assigns one immediately.
 ```sql
 create table buses (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
+  fleet_number text,
   registration_number text not null,
   capacity int not null check (capacity > 0),
   make text,
   model text,
-  status text not null default 'ACTIVE' check (status in ('ACTIVE','MAINTENANCE','RETIRED')),
+  manufacture_year int,
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','MAINTENANCE','RETIRED')),
   permit_expiry date,
   insurance_expiry date,
   fitness_expiry date,
+  notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
-  unique (school_id, registration_number)
+  unique (school_id, registration_number),
+  unique (school_id, fleet_number)
 );
 ```
+`status` semantics: `ACTIVE` (in service) and `INACTIVE`/`MAINTENANCE`
+(temporarily withdrawn — both reversible via a normal `PATCH`) vs. `RETIRED`
+(terminal — a bus can only reach this state through `POST /buses/:id/archive`,
+never a plain status update, mirroring `Student.status`'s archive-only
+`INACTIVE`; `PATCH` explicitly rejects `status: 'RETIRED'` with a 400 telling
+the caller to use the archive endpoint instead). This is a routine,
+school-level concern gated by `buses.manage` — unlike `School.status`
+([ADR 0011](adr/0011-school-status-platform-managed.md)), it is not a
+platform-level lifecycle decision.
 
 ### `bus_devices`
-Generic device inventory (GPS unit today; camera/edge-box rows added in Phase 2
-reuse this table's shape via `device_type`).
+Generic device inventory — a GPS tracker or edge computer today, a camera
+controller once Phase 2 camera work actually starts (not before: adding an
+enum value for a device type nothing uses yet would be exactly the kind of
+speculative addition the project avoids).
 ```sql
 create table bus_devices (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
   bus_id uuid not null references buses(id),
-  device_type text not null check (device_type in ('GPS','CAMERA','EDGE_AI_BOX')),
-  external_device_id text not null, -- serial/IMEI from hardware vendor
+  device_type text not null check (device_type in ('GPS_TRACKER','EDGE_COMPUTER','NETWORK_GATEWAY')),
+  external_device_id text not null, -- serial/IMEI from hardware vendor — not a secret
+  firmware_version text,
+  metadata jsonb, -- device configuration (e.g. reporting interval); distinct from last_health
   status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','FAULTY')),
   last_seen_at timestamptz,
   last_health jsonb,
@@ -279,8 +302,22 @@ create table bus_devices (
 );
 create index on bus_devices (bus_id);
 ```
+No credential/secret column exists on this table — see
+[security.md#device-security](security.md#device-security) for why. As with
+`buses.status`, `PATCH` cannot set `status` to `INACTIVE` directly; only
+`POST /devices/:id/deactivate` can.
 
 ### `drivers`, `attendants`
+Transport-specific profiles layered onto an existing `User` — never a second
+identity or credential store. `POST /drivers` and `POST /attendants` attach a
+profile to an already-existing staff user (created via the Users/invite
+flow); they never create a `User` or set a password themselves. `status`
+here (`ACTIVE`/`INACTIVE`, via `activate`/`deactivate` endpoints) is a
+transport-operational flag only — e.g. "not currently doing driving
+duty" — and is completely independent of the underlying `User.status`
+(`ACTIVE`/`INVITED`/`SUSPENDED`/`DISABLED`) that actually gates login;
+deactivating a driver profile has no effect on whether that person can sign
+in as staff.
 ```sql
 create table drivers (
   id uuid primary key default gen_random_uuid(),
@@ -292,7 +329,8 @@ create table drivers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
-  unique (user_id)
+  unique (user_id),
+  unique (school_id, license_number)
 );
 
 create table attendants (
@@ -605,3 +643,32 @@ migration under `prisma/migrations/` is authoritative.
   tables have no `school_id` column of their own (see [§3](#3-core-tables-mvp));
   they are protected transitively because the application only ever reaches them
   through an already-tenant-scoped `roles`/`users` query, never independently.
+
+## 8. Data Model Principle: Fleet Domain
+
+Introduced in Phase 1 Step 3 (`buses`/`bus_devices`/`drivers`/`attendants`),
+the fleet domain keeps four concepts deliberately separate rather than
+merging them for convenience:
+
+- **`User`** — the authentication identity. Staff sign in as a `User`
+  regardless of what transport role they hold.
+- **`Driver`/`Attendant` profile** — transport-specific information layered
+  onto an existing `User` via `user_id` (1:1, `unique(user_id)`). Creating one
+  never creates a `User` or sets a password; the person must already exist as
+  staff (via the invite flow from Phase 1 Step 2). This also means assigning
+  the `DRIVER`/`BUS_ATTENDANT` RBAC role (which grants *login-time*
+  permissions like `trips.manage`) and creating the driver/attendant profile
+  (which records *fleet-domain* facts like a license number) are
+  independent actions — one doesn't imply the other.
+- **`Bus`** — the vehicle itself, with no `driver_id`/`attendant_id` column.
+- **`BusDevice`** — a physical/edge device attached to a bus.
+
+**No separate "assignment" entity was created** linking a bus to a driver and
+attendant for a given day. The schema already has one: the `Trip` model
+(scaffolded in Phase 0, not yet exposed via any API — routes/trips are a
+later Phase 1 step) carries `bus_id`/`driver_id`/`attendant_id` directly and
+is inherently time-bound (`service_date` + `shift`). Building a second,
+redundant assignment concept now — before anything consumes either — would
+be exactly the kind of premature abstraction this project avoids. When the
+Trips module is built, it becomes the real "who's driving which bus today"
+record.

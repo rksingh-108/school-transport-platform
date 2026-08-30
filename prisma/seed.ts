@@ -134,12 +134,19 @@ async function seedDemoSchool() {
   await makeStaffUser('transport.admin@demo-school.example', 'Vikram Shah (Transport Admin, Dev)', 'TRANSPORT_ADMIN');
   await makeStaffUser('principal@demo-school.example', 'Meera Iyer (Principal, Dev)', 'PRINCIPAL');
   const driverUser = await makeStaffUser('driver@demo-school.example', 'Ramesh Kumar (Driver, Dev)', 'DRIVER');
+  const driverUser2 = await makeStaffUser('driver2@demo-school.example', 'Suresh Nair (Driver, Dev)', 'DRIVER');
   const attendantUser = await makeStaffUser('attendant@demo-school.example', 'Sunita Devi (Attendant, Dev)', 'BUS_ATTENDANT');
+  const attendantUser2 = await makeStaffUser('attendant2@demo-school.example', 'Lakshmi Menon (Attendant, Dev)', 'BUS_ATTENDANT');
 
   const driver = await prisma.driver.upsert({
     where: { userId: driverUser.id },
     update: {},
     create: { schoolId: school.id, userId: driverUser.id, licenseNumber: 'KA-DEV-000111' },
+  });
+  await prisma.driver.upsert({
+    where: { userId: driverUser2.id },
+    update: {},
+    create: { schoolId: school.id, userId: driverUser2.id, licenseNumber: 'KA-DEV-000112' },
   });
 
   const attendant = await prisma.attendant.upsert({
@@ -147,11 +154,53 @@ async function seedDemoSchool() {
     update: {},
     create: { schoolId: school.id, userId: attendantUser.id },
   });
+  await prisma.attendant.upsert({
+    where: { userId: attendantUser2.id },
+    update: {},
+    create: { schoolId: school.id, userId: attendantUser2.id },
+  });
 
   const bus = await prisma.bus.upsert({
     where: { schoolId_registrationNumber: { schoolId: school.id, registrationNumber: 'KA-01-DEV-1234' } },
     update: {},
-    create: { schoolId: school.id, registrationNumber: 'KA-01-DEV-1234', capacity: 40 },
+    create: {
+      schoolId: school.id,
+      fleetNumber: 'A-01',
+      registrationNumber: 'KA-01-DEV-1234',
+      capacity: 40,
+      make: 'Tata',
+      model: 'Starbus',
+      manufactureYear: 2019,
+    },
+  });
+  const bus2 = await prisma.bus.upsert({
+    where: { schoolId_registrationNumber: { schoolId: school.id, registrationNumber: 'KA-01-DEV-5678' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      fleetNumber: 'A-02',
+      registrationNumber: 'KA-01-DEV-5678',
+      capacity: 30,
+      make: 'Ashok Leyland',
+      model: 'Falcon',
+      manufactureYear: 2021,
+    },
+  });
+
+  await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0001' } },
+    update: {},
+    create: { schoolId: school.id, busId: bus.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0001', firmwareVersion: '1.4.0' },
+  });
+  await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0002' } },
+    update: {},
+    create: { schoolId: school.id, busId: bus2.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0002', firmwareVersion: '1.4.0' },
+  });
+  await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-A-0001' } },
+    update: {},
+    create: { schoolId: school.id, busId: bus.id, deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-A-0001' },
   });
 
   let route = await prisma.route.findFirst({ where: { schoolId: school.id, name: 'Route 1 — Morning' } });
@@ -270,6 +319,53 @@ async function seedSchoolB() {
 
   const admin = await makeStaffUser('school.admin@demo-school-b.example', 'Karan Mehta (School Admin B, Dev)', 'SCHOOL_ADMIN');
   await makeStaffUser('transport.manager@demo-school-b.example', 'Neha Joshi (Transport Manager B, Dev)', 'TRANSPORT_MANAGER');
+
+  const driverUserB = await makeStaffUser('driver@demo-school-b.example', 'Anil Kumar (Driver, Dev, School B)', 'DRIVER');
+  const attendantUserB = await makeStaffUser('attendant@demo-school-b.example', 'Kavya Reddy (Attendant, Dev, School B)', 'BUS_ATTENDANT');
+
+  await prisma.driver.upsert({
+    where: { userId: driverUserB.id },
+    update: {},
+    create: { schoolId: school.id, userId: driverUserB.id, licenseNumber: 'MH-DEV-000211' },
+  });
+  await prisma.attendant.upsert({
+    where: { userId: attendantUserB.id },
+    update: {},
+    create: { schoolId: school.id, userId: attendantUserB.id },
+  });
+
+  const busB1 = await prisma.bus.upsert({
+    where: { schoolId_registrationNumber: { schoolId: school.id, registrationNumber: 'MH-01-DEV-2222' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      fleetNumber: 'B-01',
+      registrationNumber: 'MH-01-DEV-2222',
+      capacity: 35,
+      make: 'Tata',
+      model: 'Starbus',
+      manufactureYear: 2020,
+    },
+  });
+  await prisma.bus.upsert({
+    where: { schoolId_registrationNumber: { schoolId: school.id, registrationNumber: 'MH-01-DEV-3333' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      fleetNumber: 'B-02',
+      registrationNumber: 'MH-01-DEV-3333',
+      capacity: 25,
+      make: 'Force Motors',
+      model: 'Traveller',
+      manufactureYear: 2018,
+    },
+  });
+
+  await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-B-0001' } },
+    update: {},
+    create: { schoolId: school.id, busId: busB1.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-B-0001', firmwareVersion: '1.3.2' },
+  });
 
   const studentA1 = await prisma.student.upsert({
     where: { schoolId_admissionNumber: { schoolId: school.id, admissionNumber: 'DEV-B-0001' } },

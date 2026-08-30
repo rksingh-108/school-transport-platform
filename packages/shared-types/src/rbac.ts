@@ -153,6 +153,14 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'device_health.read',
   ],
   TRANSPORT_MANAGER: [
+    // Read-only fleet visibility — added in Phase 1 Step 3 while reviewing
+    // existing grants: a manager who schedules trips/attendance needs to see
+    // which buses/drivers/attendants exist, but has no business creating or
+    // editing fleet records (that stays TRANSPORT_ADMIN/SCHOOL_ADMIN-only,
+    // via buses.manage/drivers.manage/attendants.manage).
+    'buses.read',
+    'drivers.read',
+    'attendants.read',
     'routes.read',
     'trips.read',
     'trips.manage',

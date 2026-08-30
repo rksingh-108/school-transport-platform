@@ -74,3 +74,58 @@ export interface ParentLinkedChildDto {
   grade: string | null;
   section: string | null;
 }
+
+export interface BusDto {
+  id: string;
+  fleetNumber: string | null;
+  registrationNumber: string;
+  make: string | null;
+  model: string | null;
+  manufactureYear: number | null;
+  capacity: number;
+  status: 'ACTIVE' | 'INACTIVE' | 'MAINTENANCE' | 'RETIRED';
+  permitExpiry: string | null;
+  insuranceExpiry: string | null;
+  fitnessExpiry: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A transport-specific profile layered onto an existing staff User — never a duplicate identity. */
+export interface DriverDto {
+  id: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  licenseNumber: string;
+  licenseExpiry: string | null;
+  status: 'ACTIVE' | 'INACTIVE';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AttendantDto {
+  id: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Never includes a device secret/credential — no such field exists on this model yet; see docs/security.md#device-security. */
+export interface BusDeviceDto {
+  id: string;
+  busId: string;
+  deviceType: 'GPS_TRACKER' | 'EDGE_COMPUTER' | 'NETWORK_GATEWAY';
+  externalDeviceId: string;
+  firmwareVersion: string | null;
+  metadata: Record<string, unknown> | null;
+  status: 'ACTIVE' | 'INACTIVE' | 'FAULTY';
+  lastSeenAt: string | null;
+  installedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}

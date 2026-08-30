@@ -4,3 +4,7 @@ export * from './schools';
 export * from './users';
 export * from './students';
 export * from './parents';
+export * from './buses';
+export * from './drivers';
+export * from './attendants';
+export * from './devices';

@@ -141,13 +141,42 @@ None of the above ever accepts a *parent-supplied* `studentId` to self-link — 
 |---|---|---|---|
 | POST | `/invitations/accept` | public | `{token, password}`. The one audience-agnostic invitation endpoint — accepting isn't a staff or parent action until *after* it succeeds. `400` generic on invalid/expired/already-accepted/revoked token (no distinction). Throttled 5/min/60s. Sets the target `User`/`Parent`'s password and status atomically; see [database.md](database.md#invitations). |
 
-### Buses / Drivers / Attendants
-| Method | Path | Permission |
-|---|---|---|
-| GET/POST | `/buses` | `buses.read` / `buses.manage` |
-| PATCH/DELETE | `/buses/:id` | `buses.manage` |
-| GET/POST | `/drivers` | `drivers.read` / `drivers.manage` |
-| GET/POST | `/attendants` | `attendants.read` / `attendants.manage` |
+### Buses / Drivers / Attendants / Devices
+
+Implemented in Phase 1 Step 3 — `apps/api/src/buses/`, `drivers/`,
+`attendants/`, `bus-devices/`. Driver/attendant `POST` attaches a profile to
+an already-existing staff user (`userId`); it never creates one — see
+[database.md §8](database.md#8-data-model-principle-fleet-domain). No
+`schoolId` field exists on any create/update DTO in this group — same
+structural tenant lock as students/parents.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/buses` | `buses.read` | Cursor-paginated; `?search`, `?status`, `?minCapacity`. |
+| GET | `/buses/:id` | `buses.read` | |
+| POST | `/buses` | `buses.manage` | `{registrationNumber, capacity, fleetNumber?, make?, model?, manufactureYear?, permitExpiry?, insuranceExpiry?, fitnessExpiry?, notes?}`. |
+| PATCH | `/buses/:id` | `buses.manage` | Same fields, all optional, plus `status` restricted to `ACTIVE`/`INACTIVE`/`MAINTENANCE` — `RETIRED` is rejected (400) with a pointer to the archive endpoint. |
+| POST | `/buses/:id/archive` | `buses.manage` | Sets `status: 'RETIRED'` (terminal). 400 if already retired. |
+| GET | `/drivers` | `drivers.read` | Cursor-paginated; `?search`, `?status`. |
+| GET | `/drivers/:id` | `drivers.read` | |
+| POST | `/drivers` | `drivers.manage` | `{userId, licenseNumber, licenseExpiry?}`. 404 if `userId` isn't an existing staff user in the caller's own school; 400 if that user already has a driver profile. |
+| PATCH | `/drivers/:id` | `drivers.manage` | `{licenseNumber?, licenseExpiry?}` — transport-profile fields only; identity fields (name/email) go through `PATCH /users/:id`. |
+| POST | `/drivers/:id/activate` \| `/deactivate` | `drivers.manage` | Transport-operational status only — never affects the underlying `User.status`/login. |
+| GET | `/attendants` | `attendants.read` | Cursor-paginated; `?search`, `?status`. |
+| GET | `/attendants/:id` | `attendants.read` | |
+| POST | `/attendants` | `attendants.manage` | `{userId}`. Same existing-user/no-duplicate rules as drivers. |
+| POST | `/attendants/:id/activate` \| `/deactivate` | `attendants.manage` | Same operational-only semantics as drivers. |
+| GET | `/buses/:busId/devices` | `buses.read` | Not paginated — a bus has few devices. 404 if `busId` isn't the caller's own bus. |
+| POST | `/buses/:busId/devices` | `buses.manage` | `{deviceType, externalDeviceId, firmwareVersion?, metadata?}`. `deviceType` is fixed at registration, never updatable. |
+| GET | `/devices/:id` | `buses.read` | |
+| PATCH | `/devices/:id` | `buses.manage` | `{externalDeviceId?, firmwareVersion?, metadata?, status?}` — `status` restricted to `ACTIVE`/`FAULTY`; `INACTIVE` is rejected (400), same archive-only-via-dedicated-endpoint pattern as buses. |
+| POST | `/devices/:id/deactivate` | `buses.manage` | Sets `status: 'INACTIVE'`. |
+
+Device endpoints are gated by `buses.read`/`buses.manage`, not a separate
+`devices.*` permission — see
+[security.md §5.2](security.md#52-device--fleet-authorization). No device
+response ever includes a credential/secret field; none exists on the model
+(§5.1 of the same doc).
 
 ### Routes / Stops
 | Method | Path | Permission |

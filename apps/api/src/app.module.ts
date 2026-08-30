@@ -14,6 +14,10 @@ import { SchoolsModule } from './schools/schools.module';
 import { UsersModule } from './users/users.module';
 import { StudentsModule } from './students/students.module';
 import { ParentsModule } from './parents/parents.module';
+import { BusesModule } from './buses/buses.module';
+import { DriversModule } from './drivers/drivers.module';
+import { AttendantsModule } from './attendants/attendants.module';
+import { BusDevicesModule } from './bus-devices/bus-devices.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -35,6 +39,10 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     UsersModule,
     StudentsModule,
     ParentsModule,
+    BusesModule,
+    DriversModule,
+    AttendantsModule,
+    BusDevicesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

@@ -34,8 +34,20 @@ surface):
    reused by every subsequent module's tests.
 4. **Users module** (staff accounts, role assignment).
 5. **Students, Parents, Parent-Students** (incl. verification workflow). Tests:
-   parent cannot see unverified/other students.
-6. **Buses, Drivers, Attendants**.
+   parent cannot see unverified/other students. **Done** — see
+   [ADR 0011](adr/0011-school-status-platform-managed.md) and the
+   `feat(core)` commit.
+6. **Buses, Drivers, Attendants**. **Done** — `BusesModule`/`DriversModule`/
+   `AttendantsModule`/`BusDevicesModule`. Driver/attendant are profiles
+   layered onto the existing `User` (never a duplicate identity/credential —
+   see [database.md](database.md#8-data-model-principle-fleet-domain)).
+   No separate bus/driver/attendant assignment entity was built: the
+   already-scaffolded `Trip` model (Phase 0's schema, not yet exposed via
+   API) is the time-bound assignment record trips/routes/attendance will use
+   — building a second assignment concept now would duplicate it before
+   anything uses either. Device credentials are deliberately unmodeled (no
+   secret/credential field exists) since no real provisioning flow exists
+   yet — see [security.md](security.md#device-security).
 7. **Routes, Stops**.
 8. **Trips, Trip-Students**. Tests: driver/attendant scoped to own trip only.
 9. **Attendance** (event-sourced state machine). Tests: full status-transition

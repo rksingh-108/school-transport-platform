@@ -174,8 +174,8 @@ when those modules ship)
 | Permission | SUPER_ADMIN | SCHOOL_ADMIN | TRANSPORT_ADMIN | TRANSPORT_MANAGER | PRINCIPAL | DRIVER | ATTENDANT | SECURITY | PARENT |
 |---|---|---|---|---|---|---|---|---|---|
 | students.read/write | platform only | ✓ | – | – | read | – | – | – | own child, read-only via parent endpoints |
-| buses.manage | platform only | ✓ | ✓ | – | read | – | – | – | – |
-| drivers/attendants.manage | – | ✓ | ✓ | – | read | – | – | – | – |
+| buses.manage | platform only | ✓ | ✓ | read | read | – | – | – | – |
+| drivers/attendants.manage | – | ✓ | ✓ | read | read | – | – | – | – |
 | routes/stops.manage | – | ✓ | ✓ | read | read | – | – | – | – |
 | trips.manage | – | ✓ | ✓ | ✓ | read | own trip start/end | own trip read | – | – |
 | attendance.manage | – | read | read | ✓ | read | – | own trip only | – | – |
@@ -268,6 +268,35 @@ child-privacy-sensitivity path in the product):
   status, latency, error code. Explicit deny-list in the logger serializer for
   `password`, `password_hash`, `token`, `mfa_secret`, and any field named `*ssn*`,
   `*aadhaar*` if ever introduced.
+
+### 5.1 Device Security
+
+`BusDevice` (Phase 1 Step 3) deliberately has **no credential/secret column**
+at all — not a hashed one, not an encrypted one. There is no real device
+provisioning flow yet for a secret to belong to; adding a column nothing
+issues, reads, or rotates would be a fake security control, not a real one.
+`externalDeviceId` (the device's serial/IMEI) is not treated as a secret — it
+identifies a device the way a license plate identifies a car, and is safe to
+show to authorized staff. When a real provisioning flow is built, any
+credential it introduces must follow the existing token pattern already used
+for refresh/reset/invitation tokens: stored as a SHA-256 hash, never
+returned by any read endpoint, never logged.
+
+### 5.2 Device / Fleet Authorization
+
+Bus, driver, attendant, and device management share the existing
+`buses.read`/`buses.manage`/`drivers.read`/`drivers.manage`/
+`attendants.read`/`attendants.manage` permissions from the seeded matrix
+(§2.3) — no new `devices.*` permission was introduced. A `BusDevice` has no
+lifecycle independent of the bus it's attached to, so its endpoints are
+gated by the owning bus's permissions (`buses.read` to view a bus's devices,
+`buses.manage` to register/update/deactivate one); introducing a parallel
+`devices.*` permission would duplicate a distinction that doesn't exist in
+the data model. `TRANSPORT_MANAGER` was given read-only fleet visibility
+(`buses.read`/`drivers.read`/`attendants.read`) in Phase 1 Step 3 — a
+pre-existing gap found while reviewing the seeded matrix before adding
+anything new (a manager who schedules trips/attendance needs to see the
+fleet, but has no business editing it).
 
 ## 6. Testing Requirements
 
