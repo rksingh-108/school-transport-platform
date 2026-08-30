@@ -200,6 +200,12 @@ describe('GPS telemetry + realtime bus tracking (e2e)', () => {
   afterAll(async () => {
     for (const schoolId of [schoolA.id, schoolB.id]) {
       await prisma.runInTenantContext(schoolId, async (tx) => {
+        // Phase 1 Step 9: a location read can trigger a GPS_STALE/
+        // GPS_OFFLINE alert (freshness state transition) — clean up before
+        // the school itself can be deleted (FK), defensively even though
+        // this suite's telemetry timestamps are always fresh.
+        await tx.notificationDelivery.deleteMany({ where: { schoolId } });
+        await tx.notification.deleteMany({ where: { schoolId } });
         await tx.gpsPoint.deleteMany({ where: { schoolId } });
         await tx.trip.deleteMany({ where: { schoolId } });
         await tx.route.deleteMany({ where: { schoolId } });

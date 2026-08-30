@@ -151,6 +151,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'emergency.read',
     'reports.read',
     'device_health.read',
+    // Operational alert recipient (GPS_STALE/GPS_OFFLINE/TRIP_CANCELLED/
+    // TRIP_NO_SHOW) — added in Phase 1 Step 9 while reviewing existing
+    // grants; only SCHOOL_ADMIN had this since Phase 0, the same class of
+    // gap as TRANSPORT_MANAGER's fleet-visibility fix in Phase 1 Step 3.
+    'notifications.read',
   ],
   TRANSPORT_MANAGER: [
     // Read-only fleet visibility — added in Phase 1 Step 3 while reviewing
@@ -171,6 +176,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'emergency.read',
     'reports.read',
     'device_health.read',
+    // Operational alert recipient — see the TRANSPORT_ADMIN note above.
+    'notifications.read',
   ],
   PRINCIPAL: [
     'schools.read',
@@ -187,6 +194,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'emergency.read',
     'reports.read',
     'audit_logs.read',
+    // Operational alert recipient — see the TRANSPORT_ADMIN note above.
+    'notifications.read',
   ],
   // `trips.manage` deliberately excluded — a driver must never manage ANY
   // trip (create/reassign/cancel any trip in the school), only start/complete

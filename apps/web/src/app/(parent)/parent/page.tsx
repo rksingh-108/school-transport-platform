@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ParentChildTransportUpdatedEvent, ParentChildWithTransportDto } from '@school-transport/shared-types';
 import { getMyChildren } from '@/lib/api/parents';
+import { getMyUnreadCount } from '@/lib/api/notifications';
 import { useParentSocket } from '@/lib/realtime/parent-socket';
 import { RequireAuth } from '@/components/require-auth';
 import { useAuth } from '@/lib/auth-context';
@@ -12,6 +13,7 @@ import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/badge';
+import { NotificationBell } from '@/components/notification-bell';
 import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
 
 /** Plain-language status text — no "TripStudent"/"deviceId"/technical terms ever surface here. */
@@ -37,12 +39,18 @@ function ParentHome() {
   const { principal, logout } = useAuth();
   const router = useRouter();
   const { data: children, error, loading, reload } = useAsync(() => getMyChildren(), []);
+  const { data: unread } = useAsync(() => getMyUnreadCount(), []);
   const [live, setLive] = useState<Record<string, ParentChildTransportUpdatedEvent>>({});
+  const [liveUnreadDelta, setLiveUnreadDelta] = useState(0);
 
   const onChildUpdate = useCallback((event: ParentChildTransportUpdatedEvent) => {
     setLive((prev) => ({ ...prev, [event.childId]: event }));
   }, []);
-  const { status: socketStatus } = useParentSocket(onChildUpdate);
+  const onNotification = useCallback(() => {
+    setLiveUnreadDelta((prev) => prev + 1);
+  }, []);
+  const { status: socketStatus } = useParentSocket(onChildUpdate, onNotification);
+  const unreadCount = (unread?.count ?? 0) + liveUnreadDelta;
 
   if (!principal || principal.type !== 'PARENT') return null;
 
@@ -58,9 +66,12 @@ function ParentHome() {
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{principal.fullName}</h1>
           <p className="text-sm text-zinc-500">{principal.school.name}</p>
         </div>
-        <Button variant="secondary" onClick={onLogout}>
-          Sign out
-        </Button>
+        <div className="flex items-center gap-2">
+          <NotificationBell href="/parent/notifications" unreadCount={unreadCount} />
+          <Button variant="secondary" onClick={onLogout}>
+            Sign out
+          </Button>
+        </div>
       </div>
 
       <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-50">My Children</h2>

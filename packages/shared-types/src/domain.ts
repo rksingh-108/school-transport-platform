@@ -435,3 +435,41 @@ export interface ParentChildTransportUpdatedEvent {
   };
   lastUpdatedAt: string;
 }
+
+/**
+ * The controlled notification-producing event taxonomy (Phase 1 Step 9) —
+ * mirrors the Prisma `NotificationEventType` enum exactly. `TRIP_STARTED`/
+ * `TRIP_COMPLETED` are published internally (see `DomainEvent` in
+ * apps/api/src/common/events/domain-event.types.ts) but never appear here —
+ * they create no `Notification` row yet. See
+ * docs/adr/0016-notifications-and-alerts.md.
+ */
+export type NotificationEventTypeDto = 'CHILD_BOARDED' | 'CHILD_DROPPED_OFF' | 'TRIP_CANCELLED' | 'TRIP_NO_SHOW' | 'GPS_STALE' | 'GPS_OFFLINE';
+
+/**
+ * One notification, as returned to either audience (parent or staff) — the
+ * same shape either way, since a notification a caller is authorized to
+ * see never needs different fields depending on who's reading it. `title`/
+ * `body` are pre-rendered, controlled template text (never assembled from
+ * client input — see `NotificationTemplates`,
+ * apps/api/src/notifications/notification-templates.ts). `payload` is a
+ * small, non-sensitive pointer only (e.g. `{tripId}`) — never raw GPS
+ * coordinates, device ids, or other staff-internal identifiers. Delivery
+ * status per external channel is intentionally NOT included — a
+ * parent/staff notification reader only needs to know the notification
+ * happened and whether they've read it, not its PUSH/SMS/EMAIL delivery
+ * mechanics.
+ */
+export interface NotificationDto {
+  id: string;
+  eventType: NotificationEventTypeDto;
+  title: string;
+  body: string;
+  payload: Record<string, string> | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface UnreadCountDto {
+  count: number;
+}

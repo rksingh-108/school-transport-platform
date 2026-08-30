@@ -9,6 +9,7 @@ import { StorageModule } from './storage/storage.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { AuditModule } from './common/audit/audit.module';
+import { DomainEventsModule } from './common/events/domain-events.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { SchoolsModule } from './schools/schools.module';
 import { UsersModule } from './users/users.module';
@@ -22,6 +23,7 @@ import { RoutesModule } from './routes/routes.module';
 import { RouteStopsModule } from './route-stops/route-stops.module';
 import { TripsModule } from './trips/trips.module';
 import { GpsModule } from './gps/gps.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -36,6 +38,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     RedisModule,
     StorageModule,
     AuditModule,
+    DomainEventsModule,
     HealthModule,
     AuthModule,
     InvitationsModule,
@@ -51,6 +54,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     RouteStopsModule,
     TripsModule,
     GpsModule,
+    NotificationsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

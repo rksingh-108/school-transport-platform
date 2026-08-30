@@ -4,6 +4,7 @@ import type { TripDto, TripStopDto, CursorPage } from '@school-transport/shared-
 import type { CreateTripInput, UpdateTripInput, ListTripsQuery, CancelTripInput, NoShowTripInput } from '@school-transport/shared-schemas';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../common/audit/audit.service';
+import { DomainEventsService } from '../common/events/domain-events.service';
 import { RbacService } from '../auth/services/rbac.service';
 import { toCursorPage } from '../common/pagination';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
@@ -37,6 +38,7 @@ export class TripsService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly rbacService: RbacService,
+    private readonly domainEvents: DomainEventsService,
   ) {}
 
   /**
@@ -309,6 +311,8 @@ export class TripsService {
       ipAddress: meta.ip,
     });
 
+    this.domainEvents.publish({ type: 'TRIP_STARTED', schoolId: principal.schoolId, tripId: id });
+
     return this.toDto(trip);
   }
 
@@ -334,6 +338,8 @@ export class TripsService {
       requestId: meta.requestId,
       ipAddress: meta.ip,
     });
+
+    this.domainEvents.publish({ type: 'TRIP_COMPLETED', schoolId: principal.schoolId, tripId: id });
 
     return this.toDto(trip);
   }
@@ -363,6 +369,8 @@ export class TripsService {
       metadata: { reason: input.reason },
     });
 
+    this.domainEvents.publish({ type: 'TRIP_CANCELLED', schoolId: principal.schoolId, tripId: id, reason: input.reason });
+
     return this.toDto(trip);
   }
 
@@ -391,6 +399,8 @@ export class TripsService {
       ipAddress: meta.ip,
       metadata: { reason: input.reason },
     });
+
+    this.domainEvents.publish({ type: 'TRIP_NO_SHOW', schoolId: principal.schoolId, tripId: id, reason: input.reason });
 
     return this.toDto(trip);
   }

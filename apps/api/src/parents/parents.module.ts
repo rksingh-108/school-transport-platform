@@ -19,5 +19,10 @@ import { ParentGateway } from './parent.gateway';
   imports: [InvitationsModule, AuthModule, GpsModule],
   controllers: [ParentsController, ParentStudentLinksController, ParentSelfController, ParentTransportController],
   providers: [ParentsService, ParentSelfService, ParentTransportService, ParentGateway],
+  // ParentGateway: consumed by NotificationsModule (Phase 1 Step 9) to push
+  // a newly-created child-scoped notification into the same
+  // `parent:child:{studentId}` room used for live transport updates —
+  // no second parent-realtime namespace was introduced.
+  exports: [ParentGateway],
 })
 export class ParentsModule {}

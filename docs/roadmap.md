@@ -99,10 +99,36 @@ surface):
     camera/edge-AI telemetry, geofencing, speed monitoring, GPS data
     retention/purge job (config placeholder only — see
     [privacy.md](privacy.md)).
-11. **Notifications** (in-app + one real channel, e.g. push via a provider adapter;
-    SMS/email adapters stubbed with a local dev implementation per the "never fake
-    an integration silently" rule — the adapter clearly logs "not configured"
-    rather than pretending to send).
+11. **Notifications**. **Done** — `NotificationsModule`
+    (`apps/api/src/notifications/`), driven by a shared in-process
+    `DomainEventsService` (`apps/api/src/common/events/`) that
+    `AttendanceService`/`TripsService`/`GpsService` publish to after their
+    own transaction commits. Event taxonomy: `CHILD_BOARDED`/
+    `CHILD_DROPPED_OFF` (attendance), `TRIP_CANCELLED`/`TRIP_NO_SHOW`
+    (parent + operational staff), `GPS_STALE`/`GPS_OFFLINE` (staff-only,
+    freshness state transitions, not every check). `TRIP_STARTED`/
+    `TRIP_COMPLETED` are published but map to no notification yet — no
+    audience needs one. In-app notifications are fully functional
+    (list/unread-count/mark-read/mark-all-read, parent + staff namespaces);
+    PUSH/SMS/EMAIL are prepared provider interfaces bound to a
+    `NotConfiguredProvider` (no real vendor wired up — see
+    [ADR 0016](adr/0016-notifications-and-alerts.md)), never a fake "sent"
+    confirmation. Idempotent by a DB unique constraint (one notification
+    per event/recipient occurrence); bounded, synchronous delivery retry
+    (no background job scheduler — not needed yet, nothing to retry against
+    a not-configured provider). Realtime push
+    (`/realtime/parent`, `parent.notification.created`) covers the two
+    child-specific attendance events; trip-level and staff notifications
+    are in-app + REST poll only, an accepted MVP scope cut. Tests: event →
+    notification flow, idempotency/duplicate-event handling, correction
+    suppression, GPS alert transition semantics (no storm), recipient
+    resolution, parent/staff/cross-tenant isolation, RLS enforcement —
+    confirmed both in e2e tests and live against the running server.
+    **Not done**: PUSH/SMS/EMAIL actually configured against a real vendor
+    (no push-token registration flow exists either), a
+    notification-preferences read/write endpoint (the data model and
+    delivery-time enforcement exist; no UI/API to change it yet), and any
+    background retry/purge job.
 12. **Reports (attendance, punctuality) + Audit logs** (audit logging is actually
     wired into every module above retroactively verified here, not bolted on last).
 13. **Parent web/mobile UI** (`(parent)` route group). **Done (transport

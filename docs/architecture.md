@@ -109,13 +109,14 @@ school-transport-platform/
 │   │   │   │   ├── ai-events/           # phase 3 (consumes ai-service)
 │   │   │   │   ├── incidents/           # phase 2/3
 │   │   │   │   ├── emergency/           # phase 2
-│   │   │   │   ├── notifications/
+│   │   │   │   ├── notifications/       # domain-event-driven notifications + operational alerts — implemented Phase 1 Step 9, see ADR 0016
 │   │   │   │   ├── reports/
 │   │   │   │   ├── audit-logs/
 │   │   │   │   ├── files/               # storage abstraction consumer
 │   │   │   │   ├── device-health/
 │   │   │   │   └── system-config/
 │   │   │   ├── common/                  # guards, interceptors, filters, decorators
+│   │   │   │   └── events/              # DomainEventsService — the shared in-process event bus (Phase 1 Step 9), see ADR 0016
 │   │   │   ├── policies/                # centralized authorization policies
 │   │   │   ├── config/
 │   │   │   └── main.ts
@@ -200,7 +201,12 @@ rule (`eslint-plugin-boundaries`), not just convention.
   `EventEmitter` (`GpsGateway.onLocationUpdate`) rather than a second
   current-location pipeline, keeping the dependency direction one-way
   (`parents` module imports `gps`, never the reverse) — see
-  [ADR 0015](adr/0015-parent-transport-tracking.md).
+  [ADR 0015](adr/0015-parent-transport-tracking.md). `/realtime/parent` also
+  carries `parent.notification.created` (Phase 1 Step 9) for the two
+  child-specific attendance notifications — pushed via the same room, not a
+  third namespace; staff notifications and trip-level parent notifications
+  are in-app + REST poll only this phase, see
+  [ADR 0016](adr/0016-notifications-and-alerts.md).
   **Deviation**: no Redis Socket.IO adapter yet — this was the Phase 0 plan
   ("backed by the Redis adapter so it can scale horizontally later"), but
   Step 7's instructions to avoid speculative infrastructure took precedence

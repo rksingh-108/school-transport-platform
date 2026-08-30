@@ -76,6 +76,14 @@ export const envSchema = z.object({
   // Exact retention is an operational/legal decision, deliberately not
   // invented here; this is the placeholder a future purge job will read.
   GPS_TELEMETRY_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+
+  // Notifications (Phase 1 Step 9) — see
+  // docs/adr/0016-notifications-and-alerts.md. Retry is a bounded,
+  // synchronous loop within one delivery attempt (no background job
+  // scheduler exists this phase), so these two values are its entire
+  // policy.
+  NOTIFICATION_MAX_DELIVERY_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  NOTIFICATION_RETRY_BACKOFF_MS: z.coerce.number().int().nonnegative().default(200),
 });
 
 export type Env = z.infer<typeof envSchema>;

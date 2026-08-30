@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { RequireAuth } from '@/components/require-auth';
 import { useAuth } from '@/lib/auth-context';
+import { useAsync } from '@/lib/use-async';
+import { getStaffUnreadCount } from '@/lib/api/notifications';
 import { Button } from '@/components/ui/button';
 
 const NAV_ITEMS = [
@@ -17,12 +19,16 @@ const NAV_ITEMS = [
   { href: '/dashboard/routes', label: 'Routes', permission: 'routes.read' },
   { href: '/dashboard/trips', label: 'Trips', permission: 'trips.read' },
   { href: '/dashboard/live', label: 'Live Tracking', permission: 'gps.read' },
+  { href: '/dashboard/notifications', label: 'Alerts', permission: 'notifications.read' },
 ] as const;
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const { principal, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+
+  const canSeeAlerts = principal?.type === 'STAFF' && principal.permissions.includes('notifications.read');
+  const { data: unread } = useAsync(() => (canSeeAlerts ? getStaffUnreadCount() : Promise.resolve({ count: 0 })), [canSeeAlerts]);
 
   if (!principal || principal.type !== 'STAFF') return null;
   const permissions = principal.permissions;
@@ -46,13 +52,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-md px-3 py-2 text-sm font-medium ${
+                className={`flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium ${
                   active
                     ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
                     : 'text-zinc-700 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800'
                 }`}
               >
                 {item.label}
+                {item.href === '/dashboard/notifications' && !!unread?.count && (
+                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-xs font-medium text-white">
+                    {unread.count > 99 ? '99+' : unread.count}
+                  </span>
+                )}
               </Link>
             );
           })}

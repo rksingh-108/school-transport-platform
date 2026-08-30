@@ -477,6 +477,43 @@ all for a client to join, request, or discover any room, including another
 child's room or a staff fleet/bus room. See
 [ADR 0015](adr/0015-parent-transport-tracking.md).
 
+### 5.8 Notification Authorization
+
+Notifications (Phase 1 Step 9) split cleanly along the same two authz
+postures already established for every other domain: parent access is
+relationship-based, staff access is RBAC-based.
+
+- **Parent** (`/parent/notifications*`): no `@RequirePermission` at all,
+  matching every other parent endpoint (§4). The recipient is always
+  `principal.id` — there is no route parameter or request body field
+  anywhere in this controller that could name a different parent, so
+  there is nothing to forge. `POST /parent/notifications` (creating one)
+  does not exist at all; notifications are produced only by
+  `NotificationsService` reacting to a domain event.
+- **Staff** (`/notifications*`): gated by the existing `notifications.read`
+  permission — `SCHOOL_ADMIN` held it since Phase 0; `PRINCIPAL`/
+  `TRANSPORT_ADMIN`/`TRANSPORT_MANAGER` were missing it despite being
+  exactly the roles this phase's operational-staff-alert recipient list
+  names, fixed while reviewing existing grants (the same class of
+  correction as `TRANSPORT_MANAGER`'s fleet-visibility gap in Phase 1
+  Step 3 and `bus_devices`' RLS gap in Phase 1 Step 7). The recipient is
+  always `principal.id` regardless of permission — a School A
+  administrator can only ever see their own alerts, never another
+  admin's, and there is no endpoint that lists another user's
+  notifications.
+
+**Recipient resolution never trusts client input.** Every notification is
+created by `NotificationsService` from a `DomainEvent` payload that
+originates entirely server-side (the authenticated principal who triggered
+the underlying board/dropoff/trip-lifecycle action, or the system's own
+GPS freshness check) — no domain event field, and therefore no
+notification's `recipientId`, is ever taken from a request body. Recipient
+sets are computed from existing, already-verified relationships:
+`ParentStudent.verified = true` rows for child-scoped events, and role-key
+membership (`SCHOOL_ADMIN`/`PRINCIPAL`/`TRANSPORT_ADMIN`/
+`TRANSPORT_MANAGER`) for operational staff alerts — never "every user in
+the school." See [ADR 0016](adr/0016-notifications-and-alerts.md).
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to

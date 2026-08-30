@@ -42,9 +42,26 @@ requirements this document does not attempt to interpret authoritatively.
 | GPS points | Bus device | School staff (`gps.read`); parent sees only current/derived location for own child's active trip, never raw historical trails | Raw points: short window (default 90 days) then aggregated/discarded; live state not retained beyond trip completion in derived form |
 | Camera footage/clips (Phase 2) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
 | AI safety events (Phase 3) | AI service | `ai_events.read/review` roles only | Tied to incident retention if escalated; otherwise short-lived |
+| Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
+
+**Implementation status (Phase 1 Step 9):** notification content is
+deliberately minimal — pre-rendered plain-language `title`/`body` text
+from a centralized template (never assembled from a domain record at read
+time) plus a small `payload` pointer (e.g. `{tripId}`). A notification
+**never** contains: raw GPS coordinates, a device id, who recorded an
+attendance event, correction details, internal database ids beyond the
+one pointer field, or another student's/parent's/staff member's
+information. External delivery (PUSH/SMS/EMAIL) is prepared at the
+interface level but not operational — no real provider is configured (see
+[ADR 0016](adr/0016-notifications-and-alerts.md)), so a parent's
+email/phone is read internally to *attempt* delivery but no message
+actually leaves the system; the attempt itself is logged clearly as
+unconfigured, never as a fake "sent" confirmation. No retention/purge job
+exists yet for the `notifications`/`notification_deliveries` tables
+(tracked in [roadmap.md](roadmap.md)).
 
 **Implementation status (Phase 1 Step 8):** parent access to trip/attendance/
 location data is now real, superseding the "does not exist yet" statements
@@ -130,6 +147,15 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
 - Any internal database id (`Trip`/`TripStudent`/`Bus`/`BusDevice`/`GpsPoint`)
   — the parent transport DTOs (Phase 1 Step 8) are hand-built and never
   serialize an internal entity.
+- Another parent's notifications, or any notification not addressed to
+  them (Phase 1 Step 9) — recipient resolution is entirely server-side,
+  from verified `ParentStudent` relationships; there is no field anywhere
+  in the notification API a parent could use to name a different
+  recipient, and no endpoint lists another parent's inbox.
+- Any staff-only operational alert (`GPS_STALE`/`GPS_OFFLINE`, or the
+  staff-facing copy of a `TRIP_CANCELLED`/`TRIP_NO_SHOW` alert) — these are
+  a completely separate notification stream (`recipientType = 'USER'`)
+  that no parent-facing endpoint or room ever reads from.
 
 ## 4. Retention & Deletion
 

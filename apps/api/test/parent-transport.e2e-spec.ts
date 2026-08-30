@@ -317,6 +317,10 @@ describe('Parent transport tracking (e2e)', () => {
   afterAll(async () => {
     for (const schoolId of [schoolA.id, schoolB.id]) {
       await prisma.runInTenantContext(schoolId, async (tx) => {
+        // Phase 1 Step 9: a location read can trigger a GPS_STALE/
+        // GPS_OFFLINE alert — clean up before the school can be deleted (FK).
+        await tx.notificationDelivery.deleteMany({ where: { schoolId } });
+        await tx.notification.deleteMany({ where: { schoolId } });
         await tx.gpsPoint.deleteMany({ where: { schoolId } });
         await tx.tripStudent.deleteMany({ where: { schoolId } });
         await tx.trip.deleteMany({ where: { schoolId } });

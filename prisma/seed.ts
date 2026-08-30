@@ -522,7 +522,7 @@ async function seedDemoSchool() {
     },
   });
   const boardedAt = new Date();
-  await prisma.attendanceEvent.create({
+  const morningBoardEvent = await prisma.attendanceEvent.create({
     data: {
       schoolId: school.id,
       tripId: morningTripToday.id,
@@ -642,7 +642,7 @@ async function seedDemoSchool() {
       notes: 'Marked absent by mistake — student had boarded.',
     },
   });
-  await prisma.attendanceEvent.create({
+  const yesterdayDropoffEvent = await prisma.attendanceEvent.create({
     data: {
       schoolId: school.id,
       tripId: yesterdayTrip.id,
@@ -655,6 +655,54 @@ async function seedDemoSchool() {
   await prisma.tripStudent.update({
     where: { id: yesterdayEntry.id },
     data: { currentStatus: 'DROPPED_OFF', boardedAt: correctedBoardAt, droppedOffAt },
+  });
+
+  // A small, realistic notification dataset (Phase 1 Step 9) — inserted
+  // directly, the same "bypass the service layer, seed the final state"
+  // approach every prior phase's seed already uses (NotificationsService
+  // itself has no meaning outside a running app with a live event bus; see
+  // docs/adr/0016-notifications-and-alerts.md). Titles/bodies match
+  // NotificationTemplates exactly, so the seeded rows are indistinguishable
+  // from ones the real pipeline would have produced.
+  await prisma.notification.create({
+    data: {
+      schoolId: school.id,
+      recipientType: 'PARENT',
+      recipientId: parent.id,
+      eventType: 'CHILD_BOARDED',
+      entityType: 'ATTENDANCE_EVENT',
+      entityId: morningBoardEvent.id,
+      title: 'Child boarded',
+      body: 'Your child has boarded the school bus.',
+      payload: { tripId: morningTripToday.id },
+    },
+  });
+  await prisma.notification.create({
+    data: {
+      schoolId: school.id,
+      recipientType: 'PARENT',
+      recipientId: parent.id,
+      eventType: 'CHILD_DROPPED_OFF',
+      entityType: 'ATTENDANCE_EVENT',
+      entityId: yesterdayDropoffEvent.id,
+      title: 'Child dropped off',
+      body: 'Your child has been dropped off.',
+      payload: { tripId: yesterdayTrip.id },
+      readAt: new Date(`${relativeDate(-1)}T09:00:00Z`),
+    },
+  });
+  await prisma.notification.create({
+    data: {
+      schoolId: school.id,
+      recipientType: 'USER',
+      recipientId: schoolAdmin.id,
+      eventType: 'GPS_STALE',
+      entityType: 'TRIP',
+      entityId: morningTripToday.id,
+      title: 'Bus location is stale',
+      body: `${bus.fleetNumber ? `Bus ${bus.fleetNumber}` : bus.registrationNumber} has not reported a fresh GPS position recently.`,
+      payload: { busId: bus.id },
+    },
   });
 
   return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };

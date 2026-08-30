@@ -6,6 +6,7 @@ import type { GpsHistoryQuery, GpsTelemetryInput } from '@school-transport/share
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { TokenService } from '../auth/services/token.service';
+import { DomainEventsService } from '../common/events/domain-events.service';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
 import type { Env } from '../config/env.schema';
 import { GpsGateway } from './gps.gateway';
@@ -55,6 +56,7 @@ export class GpsService {
     private readonly redis: RedisService,
     private readonly tokenService: TokenService,
     private readonly config: ConfigService<Env, true>,
+    private readonly domainEvents: DomainEventsService,
     @Inject(forwardRef(() => GpsGateway)) private readonly gateway: GpsGateway,
   ) {}
 
@@ -372,6 +374,7 @@ export class GpsService {
     const deviceLastSeenAt = device?.lastSeenAt?.toISOString() ?? null;
 
     if (!snapshot) {
+      this.checkFreshnessTransition(schoolId, busId, null, 'UNKNOWN').catch(() => {});
       return {
         busId,
         busRegistrationNumber: bus.registrationNumber,
@@ -389,6 +392,9 @@ export class GpsService {
       };
     }
 
+    const freshness = this.computeFreshness(new Date(snapshot.deviceTime), new Date());
+    this.checkFreshnessTransition(schoolId, busId, snapshot.tripId, freshness).catch(() => {});
+
     return {
       busId,
       busRegistrationNumber: bus.registrationNumber,
@@ -401,9 +407,68 @@ export class GpsService {
       accuracyM: snapshot.accuracyM,
       recordedAt: snapshot.deviceTime,
       receivedAt: snapshot.receivedAt,
-      freshness: this.computeFreshness(new Date(snapshot.deviceTime), new Date()),
+      freshness,
       deviceLastSeenAt,
     };
+  }
+
+  /**
+   * GPS_STALE/GPS_OFFLINE alert semantics (Phase 1 Step 9) — a state
+   * TRANSITION, never every freshness check. Lazily evaluated on reads
+   * (this method, called from every `readCurrentLocation` caller: staff
+   * current-location/fleet reads, parent transport reads) rather than a
+   * proactive background sweep — no job/timer infrastructure exists in
+   * this codebase, and adding one solely for this would be the kind of
+   * over-engineering this phase's instructions warn against. A bus with
+   * no one currently viewing its location won't be proactively alerted on
+   * until the next read; documented as an accepted limitation in
+   * docs/adr/0016-notifications-and-alerts.md.
+   *
+   * A Redis marker (`lastNotifiedFreshness`) makes the common case (nothing
+   * changed) a single cheap GET, so this never queries Postgres on every
+   * read — only when the marker is actually stale. The
+   * `Notification` table's own unique constraint (see NotificationsService)
+   * is the real idempotency guarantee against races; this marker is purely
+   * a performance optimization to avoid attempting a publish at all when
+   * nothing changed.
+   */
+  private async checkFreshnessTransition(
+    schoolId: string,
+    busId: string,
+    snapshotTripId: string | null,
+    freshness: 'LIVE' | 'STALE' | 'UNKNOWN',
+  ): Promise<void> {
+    const trip = snapshotTripId
+      ? await this.prisma.runInTenantContext(schoolId, (tx) =>
+          tx.trip.findFirst({ where: { id: snapshotTripId, status: 'IN_PROGRESS' }, select: { id: true } }),
+        )
+      : await this.prisma.runInTenantContext(schoolId, (tx) =>
+          tx.trip.findFirst({ where: { busId, status: 'IN_PROGRESS' }, select: { id: true } }),
+        );
+
+    const key = this.freshnessAlertMarkerKey(schoolId, busId);
+    if (!trip) {
+      // No active trip — nothing to alert about; clear any stale marker so a future trip starts evaluation fresh.
+      await this.redis.client.del(key);
+      return;
+    }
+
+    const previous = await this.redis.client.get(key);
+    if (previous === freshness) return; // no change — the common case, one Redis GET and done.
+    await this.redis.client.set(key, freshness, 'EX', CURRENT_LOCATION_TTL_SECONDS);
+
+    // Transitions back to LIVE are recorded (so a later re-degradation is
+    // detected again) but never notified — no GPS_RECOVERED type exists;
+    // see the ADR's "don't invent alert types nothing asked for" note.
+    if (freshness === 'STALE' && previous !== 'STALE') {
+      this.domainEvents.publish({ type: 'GPS_STALE', schoolId, tripId: trip.id, busId });
+    } else if (freshness === 'UNKNOWN' && previous !== 'UNKNOWN') {
+      this.domainEvents.publish({ type: 'GPS_OFFLINE', schoolId, tripId: trip.id, busId });
+    }
+  }
+
+  private freshnessAlertMarkerKey(schoolId: string, busId: string): string {
+    return `school:${schoolId}:bus:${busId}:last-notified-freshness`;
   }
 
   private computeFreshness(deviceTime: Date | null, now: Date): 'LIVE' | 'STALE' | 'UNKNOWN' {

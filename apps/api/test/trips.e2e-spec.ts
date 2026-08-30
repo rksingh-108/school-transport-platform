@@ -175,6 +175,12 @@ describe('Trips, trip stops, and student manifests (e2e)', () => {
   afterAll(async () => {
     for (const schoolId of [schoolA.id, schoolB.id]) {
       await prisma.runInTenantContext(schoolId, async (tx) => {
+        // Phase 1 Step 9: TripsService now publishes domain events on
+        // start/complete/cancel/no-show, which NotificationsService turns
+        // into real Notification/NotificationDelivery rows — these must be
+        // cleaned up before the school itself can be deleted (FK).
+        await tx.notificationDelivery.deleteMany({ where: { schoolId } });
+        await tx.notification.deleteMany({ where: { schoolId } });
         await tx.attendanceEvent.deleteMany({ where: { schoolId } });
         await tx.tripStudent.deleteMany({ where: { schoolId } });
         await tx.tripStop.deleteMany({ where: { schoolId } });

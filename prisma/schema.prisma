@@ -247,10 +247,34 @@ enum NotificationChannel {
   IN_APP
 }
 
-enum NotificationStatus {
+// Phase 1 Step 9: the controlled notification-producing event taxonomy.
+// Deliberately narrower than the full internal DomainEvent union
+// (apps/api/src/common/events/domain-event.types.ts) — TRIP_STARTED/
+// TRIP_COMPLETED are published internally for future consumers but create
+// no Notification row yet (neither the parent- nor staff-facing audience
+// list calls for one), so they're not part of this DB enum at all. See
+// docs/adr/0016-notifications-and-alerts.md.
+enum NotificationEventType {
+  CHILD_BOARDED
+  CHILD_DROPPED_OFF
+  TRIP_CANCELLED
+  TRIP_NO_SHOW
+  GPS_STALE
+  GPS_OFFLINE
+}
+
+// Per-channel delivery outcome — distinct from a "logical notification"
+// existing at all (see Notification/NotificationDelivery below).
+// NOT_CONFIGURED is a deliberately distinct terminal state from FAILED: it
+// means no real provider credential exists for this channel at all, not
+// that a real delivery attempt failed. See docs/adr/0016.
+enum NotificationDeliveryStatus {
   PENDING
+  PROCESSING
   SENT
+  DELIVERED
   FAILED
+  NOT_CONFIGURED
 }
 
 enum ActorType {
@@ -297,28 +321,29 @@ model School {
   updatedAt    DateTime     @updatedAt @map("updated_at")
   deletedAt    DateTime?    @map("deleted_at")
 
-  users               User[]
-  roles               Role[]
-  students            Student[]
-  parents             Parent[]
-  parentStudents      ParentStudent[]
-  buses               Bus[]
-  busDevices          BusDevice[]
-  drivers             Driver[]
-  attendants          Attendant[]
-  routes              Route[]
-  routeStops          RouteStop[]
-  trips               Trip[]
-  tripStops           TripStop[]
-  tripStudents        TripStudent[]
-  attendanceEvents    AttendanceEvent[]
-  gpsPoints           GpsPoint[]
-  notifications       Notification[]
-  auditLogs           AuditLog[]
-  files               File[]
-  refreshTokens       RefreshToken[]
-  passwordResetTokens PasswordResetToken[]
-  invitations         Invitation[]
+  users                  User[]
+  roles                  Role[]
+  students               Student[]
+  parents                Parent[]
+  parentStudents         ParentStudent[]
+  buses                  Bus[]
+  busDevices             BusDevice[]
+  drivers                Driver[]
+  attendants             Attendant[]
+  routes                 Route[]
+  routeStops             RouteStop[]
+  trips                  Trip[]
+  tripStops              TripStop[]
+  tripStudents           TripStudent[]
+  attendanceEvents       AttendanceEvent[]
+  gpsPoints              GpsPoint[]
+  notifications          Notification[]
+  notificationDeliveries NotificationDelivery[]
+  auditLogs              AuditLog[]
+  files                  File[]
+  refreshTokens          RefreshToken[]
+  passwordResetTokens    PasswordResetToken[]
+  invitations            Invitation[]
 
   @@map("schools")
 }
@@ -715,18 +740,18 @@ model Trip {
 // ever deleted — the snapshot itself is unaffected either way. See
 // docs/adr/0012-trip-stop-snapshot-and-lifecycle.md.
 model TripStop {
-  id                    String    @id @default(uuid())
-  schoolId              String    @map("school_id")
-  tripId                String    @map("trip_id")
-  sourceRouteStopId     String?   @map("source_route_stop_id")
-  sequenceNo            Int       @map("sequence_no")
+  id                    String   @id @default(uuid())
+  schoolId              String   @map("school_id")
+  tripId                String   @map("trip_id")
+  sourceRouteStopId     String?  @map("source_route_stop_id")
+  sequenceNo            Int      @map("sequence_no")
   name                  String
   address               String?
   latitude              Float
   longitude             Float
-  expectedOffsetMinutes Int       @map("expected_offset_minutes")
+  expectedOffsetMinutes Int      @map("expected_offset_minutes")
   mode                  StopMode
-  createdAt             DateTime  @default(now()) @map("created_at")
+  createdAt             DateTime @default(now()) @map("created_at")
 
   school           School            @relation(fields: [schoolId], references: [id])
   trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
@@ -884,32 +909,99 @@ model GpsPoint {
 // Notifications
 // ---------------------------------------------------------------------------
 
+// The durable, logical notification record (Phase 1 Step 9) — one row per
+// (event, recipient), independent of how many channels it's delivered
+// through (see NotificationDelivery below). `title`/`body` are
+// pre-rendered plain text from a centralized template
+// (NotificationTemplates, apps/api/src/notifications/) at creation time —
+// never raw client input, never assembled ad hoc at read time, so
+// localization can be added later in one place. `payload` is a small,
+// non-sensitive structured pointer (e.g. `{tripId}`) for the frontend to
+// link back to the relevant screen — never raw GPS coordinates, device
+// ids, or other internal identifiers beyond what's already in `entityId`.
+//
+// `@@unique([schoolId, eventType, entityId, recipientType, recipientId])`
+// is the idempotency key: reprocessing the same domain event for the same
+// recipient is a silent no-op (caught the same way GPS telemetry's retry
+// dedup works — see docs/adr/0014), never a duplicate row. `entityId` is
+// chosen per event type to make this constraint mean exactly "one
+// notification per real-world occurrence": the originating
+// AttendanceEvent's own id for CHILD_BOARDED/CHILD_DROPPED_OFF (each
+// boarding/drop-off is already a unique immutable fact — see ADR 0013), the
+// Trip's id for TRIP_CANCELLED/TRIP_NO_SHOW (a trip can only reach that
+// terminal status once), and the Trip's id for GPS_STALE/GPS_OFFLINE too
+// (at most one alert per trip per transition type, not one per stale
+// reading — see docs/adr/0016-notifications-and-alerts.md).
 model Notification {
-  id            String              @id @default(uuid())
-  schoolId      String              @map("school_id")
-  recipientType RecipientType       @map("recipient_type")
-  recipientId   String              @map("recipient_id")
-  eventType     String              @map("event_type")
-  channel       NotificationChannel
-  payload       Json
-  status        NotificationStatus  @default(PENDING)
-  sentAt        DateTime?           @map("sent_at")
-  createdAt     DateTime            @default(now()) @map("created_at")
+  id            String                @id @default(uuid())
+  schoolId      String                @map("school_id")
+  recipientType RecipientType         @map("recipient_type")
+  recipientId   String                @map("recipient_id")
+  eventType     NotificationEventType @map("event_type")
+  entityType    String                @map("entity_type")
+  entityId      String                @map("entity_id")
+  title         String
+  body          String
+  payload       Json?
+  readAt        DateTime?             @map("read_at")
+  createdAt     DateTime              @default(now()) @map("created_at")
 
-  school School @relation(fields: [schoolId], references: [id])
+  school     School                 @relation(fields: [schoolId], references: [id])
+  deliveries NotificationDelivery[]
 
-  @@index([schoolId, recipientType, recipientId])
+  @@unique([schoolId, eventType, entityId, recipientType, recipientId])
+  @@index([schoolId, recipientType, recipientId, createdAt(sort: Desc)])
+  @@index([schoolId, recipientType, recipientId, readAt])
   @@map("notifications")
 }
 
-model NotificationPreference {
-  id        String  @id @default(uuid())
-  parentId  String  @map("parent_id")
-  eventType String  @map("event_type")
-  channel   String
-  enabled   Boolean @default(true)
+// Per-channel delivery tracking — deliberately split from Notification
+// (the "logical" record) rather than one row per channel, so "was this
+// actually sent" is never confused with "does this notification exist."
+// `schoolId` is denormalized here (not just reachable via `notification`)
+// to match this codebase's standing RLS convention — every tenant-scoped
+// table carries its own school_id column, never relies on a join for
+// row-level security. See docs/database.md#5-row-level-security.
+model NotificationDelivery {
+  id                String                     @id @default(uuid())
+  schoolId          String                     @map("school_id")
+  notificationId    String                     @map("notification_id")
+  channel           NotificationChannel
+  status            NotificationDeliveryStatus @default(PENDING)
+  providerMessageId String?                    @map("provider_message_id")
+  attempts          Int                        @default(0)
+  lastAttemptAt     DateTime?                  @map("last_attempt_at")
+  deliveredAt       DateTime?                  @map("delivered_at")
+  failedAt          DateTime?                  @map("failed_at")
+  failureReason     String?                    @map("failure_reason")
+  createdAt         DateTime                   @default(now()) @map("created_at")
 
-  @@unique([parentId, eventType, channel])
+  school       School       @relation(fields: [schoolId], references: [id])
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@map("notification_deliveries")
+}
+
+// Per-parent, per-channel opt-out (Phase 1 Step 9). Deliberately simpler
+// than the Phase 0 scaffold's per-(parent, eventType, channel) shape — the
+// spec's actual minimum is a flat per-channel toggle, and a full matrix
+// nobody asked for would be exactly the over-engineering this phase's
+// instructions warn against. Covers PUSH/SMS/EMAIL only: IN_APP delivery
+// is unconditional for every notification-producing event and is never
+// represented here at all, so there is no row to flip that could
+// accidentally suppress a required operational notification — see
+// docs/adr/0016-notifications-and-alerts.md. `schoolId` was added here
+// (the Phase 0 scaffold had none) while wiring this up for real, matching
+// the standing RLS convention.
+model NotificationPreference {
+  id       String              @id @default(uuid())
+  schoolId String              @map("school_id")
+  parentId String              @map("parent_id")
+  channel  NotificationChannel
+  enabled  Boolean             @default(true)
+
+  @@unique([parentId, channel])
   @@map("notification_preferences")
 }
 

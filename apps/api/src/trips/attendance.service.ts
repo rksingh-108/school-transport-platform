@@ -4,6 +4,7 @@ import type { AttendanceEventDto, TripStudentDto } from '@school-transport/share
 import type { RecordAttendanceInput, CorrectAttendanceInput } from '@school-transport/shared-schemas';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../common/audit/audit.service';
+import { DomainEventsService } from '../common/events/domain-events.service';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
 import type { RequestMeta } from '../auth/services/auth.service';
 
@@ -31,6 +32,7 @@ export class AttendanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly domainEvents: DomainEventsService,
   ) {}
 
   /** BUS_ATTENDANT holds `attendance.manage` scoped to "own trip only" (docs/security.md §5.5) — resolved by profile, not role name, same pattern as TripsService's driver scoping. */
@@ -106,6 +108,17 @@ export class AttendanceService {
       metadata: { tripId, tripStudentId },
     });
 
+    // Published only from a normal board — never from correct() — so a
+    // correction can never resend a duplicate "your child boarded"
+    // notification. See NotificationsService and docs/adr/0016.
+    this.domainEvents.publish({
+      type: 'CHILD_BOARDED',
+      schoolId: principal.schoolId,
+      tripId,
+      studentId: result.updated.studentId,
+      attendanceEventId: result.eventId,
+    });
+
     return this.toTripStudentDto(result.updated);
   }
 
@@ -159,6 +172,14 @@ export class AttendanceService {
       requestId: meta.requestId,
       ipAddress: meta.ip,
       metadata: { tripId, tripStudentId },
+    });
+
+    this.domainEvents.publish({
+      type: 'CHILD_DROPPED_OFF',
+      schoolId: principal.schoolId,
+      tripId,
+      studentId: result.updated.studentId,
+      attendanceEventId: result.eventId,
     });
 
     return this.toTripStudentDto(result.updated);

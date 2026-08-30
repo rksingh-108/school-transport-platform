@@ -301,8 +301,15 @@ whether the id even exists.
 | GET | `/parent/children` | List own linked+**verified** children (`ParentChildWithTransportDto`: id, fullName, grade, section, plus a `transport` summary — trip/attendance status text, bus display name, freshness, no coordinates). One call, no per-child follow-up request. | Implemented, Phase 1 Step 2 (identity fields); enriched with `transport` in Phase 1 Step 8 |
 | GET | `/parent/children/:studentId` | Plain identity only (`ParentLinkedChildDto`) — unrelated to transport, unchanged since Step 2. | Implemented, Phase 1 Step 2 |
 | GET | `/parent/children/:studentId/transport` | The full parent-safe transport view (`ParentTransportDto`) for one child — trip, simplified attendance, bus display name, and (only while the trip is `IN_PROGRESS`) live location + freshness. See [ADR 0015](adr/0015-parent-transport-tracking.md). | Implemented, Phase 1 Step 8 |
-| GET | `/parent/notifications` | own notifications | Phase 2 (not built) |
-| PATCH | `/parent/notification-preferences` | own preferences only | Phase 2 (not built) |
+| GET | `/parent/notifications` | Own notifications, newest first (`NotificationDto`: eventType, title, body, payload, readAt, createdAt — never who recorded it, never a correction record, never an internal id). Cursor-paginated. | Implemented, Phase 1 Step 9 |
+| GET | `/parent/notifications/unread-count` | `{count}` — one indexed COUNT query, never a full list scan. | Implemented, Phase 1 Step 9 |
+| POST | `/parent/notifications/:id/read` | Marks one of the caller's own notifications read; `404` (not the caller's) if it belongs to another parent. | Implemented, Phase 1 Step 9 |
+| POST | `/parent/notifications/read-all` | Marks every unread notification of the caller's read. | Implemented, Phase 1 Step 9 |
+| PATCH | `/parent/notification-preferences` | own preferences only | Phase 2 (not built — see [ADR 0016](adr/0016-notifications-and-alerts.md); preferences exist in the data model but have no dedicated read/write endpoint yet, only the internal delivery path honors them) |
+
+`POST /parent/notifications` (creating one) does not exist — notifications
+are a backend/domain operation, generated only from `NotificationsService`
+reacting to a domain event, never a client-callable one.
 
 No parent endpoint ever accepts a `busId`, `tripId`, `deviceId`, `cameraId`, or
 `driverId` as a queryable resource — parents reach bus/location data only
@@ -317,10 +324,25 @@ A parent token is rejected by every internal staff endpoint (`/gps/fleet`,
 `@RequireAudience('STAFF')` guard, and a staff token is equally rejected by
 the parent transport endpoints above.
 
-### Notifications / Reports / Audit
+### Notifications (staff operational alerts)
+
+Implemented in Phase 1 Step 9 — `apps/api/src/notifications/`. Gated by
+`notifications.read` (SCHOOL_ADMIN since Phase 0; PRINCIPAL/
+TRANSPORT_ADMIN/TRANSPORT_MANAGER added while reviewing existing grants
+this phase — see [ADR 0016](adr/0016-notifications-and-alerts.md)). Always
+scoped to `recipientId = principal.id` — a School A administrator sees only
+their own alerts, never another admin's.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/notifications` | Own operational alerts (`TRIP_CANCELLED`/`TRIP_NO_SHOW`/`GPS_STALE`/`GPS_OFFLINE`), newest first. Cursor-paginated. |
+| GET | `/notifications/unread-count` | `{count}`. |
+| POST | `/notifications/:id/read` | Marks one of the caller's own alerts read. |
+| POST | `/notifications/read-all` | Marks every unread alert of the caller's read. |
+
+### Reports / Audit
 | Method | Path | Permission |
 |---|---|---|
-| GET | `/notifications` | `notifications.read` (own school) |
 | GET | `/reports/attendance` | `reports.read` |
 | GET | `/reports/punctuality` | `reports.read` |
 | GET | `/audit-logs` | `audit_logs.read` (PRINCIPAL/SCHOOL_ADMIN/SUPER_ADMIN only) |
@@ -378,7 +400,17 @@ None of these are exposed to the parent namespace, ever (see
   [ADR 0015](adr/0015-parent-transport-tracking.md) for the exact trigger
   and its one documented limitation (a boarding/drop-off change with no
   accompanying GPS fix won't independently push; the REST endpoint always
-  has the true current state on load/reconnect).
+  has the true current state on load/reconnect). The same namespace also
+  pushes `parent.notification.created` (Phase 1 Step 9), into the same
+  `parent:child:{studentId}` room, for `CHILD_BOARDED`/`CHILD_DROPPED_OFF`
+  only:
+  ```
+  { id, eventType, title, body, payload, readAt, createdAt }
+  ```
+  Trip-level parent notifications (`TRIP_CANCELLED`/`TRIP_NO_SHOW`) and all
+  staff notifications are in-app + REST poll only this phase — an accepted
+  MVP scope cut, not an oversight; see
+  [ADR 0016](adr/0016-notifications-and-alerts.md).
 - `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
   outline names; the implemented namespace/event names differ
   (`/realtime/fleet`, `/realtime/parent`) and this section now reflects

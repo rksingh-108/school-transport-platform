@@ -630,33 +630,87 @@ placeholder — no purge job runs against this table yet; see
 referenced externally by ID, is extremely high-volume, and benefits from a compact
 sequential key for storage/index efficiency.
 
-### `notifications`, `notification_preferences`
+### `notifications`, `notification_deliveries`, `notification_preferences`
+
+Implemented in Phase 1 Step 9 — see
+[ADR 0016](adr/0016-notifications-and-alerts.md) for the full design
+(the split between the two tables below, the idempotency key, recipient
+resolution per event type, and why GPS/attendance/trip domain services
+publish through one shared in-process event bus rather than calling
+notification code directly).
+
+`notifications` is the durable, logical record — one row per (event,
+recipient), independent of how many channels it's delivered through.
 ```sql
 create table notifications (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
   recipient_type text not null check (recipient_type in ('USER','PARENT')),
   recipient_id uuid not null,
-  event_type text not null, -- e.g. 'CHILD_BOARDED', 'BUS_DELAYED'
-  channel text not null check (channel in ('PUSH','SMS','EMAIL','IN_APP')),
-  payload jsonb not null,
-  status text not null default 'PENDING' check (status in ('PENDING','SENT','FAILED')),
-  sent_at timestamptz,
-  created_at timestamptz not null default now()
+  event_type text not null check (event_type in ('CHILD_BOARDED','CHILD_DROPPED_OFF','TRIP_CANCELLED','TRIP_NO_SHOW','GPS_STALE','GPS_OFFLINE')),
+  entity_type text not null, -- e.g. 'ATTENDANCE_EVENT', 'TRIP' — which kind of id entity_id below refers to
+  entity_id text not null,   -- the originating AttendanceEvent/Trip id — see the ADR for exactly which, per event type
+  title text not null,       -- pre-rendered from a centralized template (apps/api/src/notifications/notification-templates.ts) — never client input
+  body text not null,
+  payload jsonb,             -- a small, non-sensitive pointer only (e.g. {tripId}) — never raw GPS coordinates or device ids
+  read_at timestamptz,
+  created_at timestamptz not null default now(),
+  -- Idempotency: reprocessing the same domain event for the same recipient
+  -- is a silent no-op (P2002 caught the same way GPS telemetry's retry
+  -- dedup works — ADR 0014), never a duplicate row.
+  unique (school_id, event_type, entity_id, recipient_type, recipient_id)
 );
-create index on notifications (school_id, recipient_type, recipient_id);
+create index on notifications (school_id, recipient_type, recipient_id, created_at desc);
+create index on notifications (school_id, recipient_type, recipient_id, read_at); -- unread-count queries
+```
 
-create table notification_preferences (
+`notification_deliveries` tracks per-channel delivery outcomes — deliberately
+split from `notifications` so "was this actually sent" is never confused
+with "does this notification exist." **No row exists for IN_APP at all** —
+the `notifications` row's own existence already is its in-app delivery;
+this table only ever holds PUSH/SMS/EMAIL attempts, and only for PARENT
+recipients (staff notifications are in-app only this phase).
+```sql
+create table notification_deliveries (
   id uuid primary key default gen_random_uuid(),
-  parent_id uuid not null references parents(id),
-  event_type text not null,
-  channel text not null,
-  enabled boolean not null default true,
-  unique (parent_id, event_type, channel)
+  school_id uuid not null references schools(id), -- denormalized, matching this codebase's standing RLS convention (never rely on a join for tenant isolation)
+  notification_id uuid not null references notifications(id) on delete cascade,
+  channel text not null check (channel in ('PUSH','SMS','EMAIL')),
+  status text not null default 'PENDING' check (status in ('PENDING','PROCESSING','SENT','DELIVERED','FAILED','NOT_CONFIGURED')),
+  provider_message_id text,
+  attempts int not null default 0,
+  last_attempt_at timestamptz,
+  delivered_at timestamptz,
+  failed_at timestamptz,
+  failure_reason text,
+  created_at timestamptz not null default now(),
+  unique (notification_id, channel)
 );
 ```
-Safety-critical event types (emergency broadcasts) are exempt from preference
-opt-out at the application layer.
+`NOT_CONFIGURED` is a deliberately distinct terminal state from `FAILED`:
+it means no real provider credential exists for this channel at all (the
+only state reachable in this phase — no PUSH/SMS/EMAIL vendor is wired
+up), not that a real delivery attempt failed. See
+[ADR 0016](adr/0016-notifications-and-alerts.md) for why `SENT` is never
+conflated with a confirmed `DELIVERED`.
+
+`notification_preferences` is a flat per-(parent, channel) opt-out for
+PUSH/SMS/EMAIL only — simpler than the Phase 0 scaffold's per-(parent,
+event type, channel) shape, matching the spec's actual stated minimum. A
+missing row defaults to enabled.
+```sql
+create table notification_preferences (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id), -- added in Phase 1 Step 9 — this table had no school_id, and therefore no RLS, since Phase 0; see §5
+  parent_id uuid not null references parents(id),
+  channel text not null check (channel in ('PUSH','SMS','EMAIL','IN_APP')),
+  enabled boolean not null default true,
+  unique (parent_id, channel)
+);
+```
+IN_APP is never represented in this table — it is unconditional for every
+notification-producing event, so there is no row to flip that could
+accidentally suppress a required operational notification.
 
 ### `audit_logs`
 ```sql
@@ -761,7 +815,18 @@ and `parents` were corrected to match. This lesson was applied proactively to
 Tables *never* queried via `runAsPlatformAdmin` (`students`, `buses`, `trips`,
 etc.) correctly have only the plain tenant check — adding the bypass clause to a
 table nothing legitimately needs it for would be an unjustified widening of the
-escape hatch.
+escape hatch. `notification_deliveries` (new, Phase 1 Step 9) is one of these —
+plain tenant-scoped RLS, no bypass, since nothing looks it up pre-tenant.
+
+**Another Phase 0 gap, fixed while building the real feature (Phase 1
+Step 9)**: `notification_preferences` had no `school_id` column at all
+since Phase 0, and so was never added to the generic tenant-isolation loop —
+meaning it had **zero RLS protection** for the entire time it sat unused.
+Fixed now that a real `school_id` column exists (the same class of
+correction as `bus_devices`' RLS gap found in Phase 1 Step 7 — see
+[ADR 0010](adr/0010-credential-resolution-rls-bypass.md)'s "Extension"
+section — and `TRANSPORT_MANAGER`'s fleet-visibility gap in Phase 1
+Step 3).
 
 ## 6. Migrations
 

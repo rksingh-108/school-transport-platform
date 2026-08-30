@@ -6,7 +6,12 @@ import {
   type OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
-import type { ParentChildTransportUpdatedEvent, ParentTripStatus, ParentAttendanceStatus } from '@school-transport/shared-types';
+import type {
+  ParentChildTransportUpdatedEvent,
+  ParentTripStatus,
+  ParentAttendanceStatus,
+  NotificationDto,
+} from '@school-transport/shared-types';
 import { TokenService } from '../auth/services/token.service';
 import { AuthService } from '../auth/services/auth.service';
 import { ParentAccessService } from '../auth/services/parent-access.service';
@@ -121,6 +126,20 @@ export class ParentGateway implements OnGatewayConnection, OnGatewayDisconnect, 
       };
       this.server.to(this.childRoom(row.studentId)).emit('parent.child.transport.updated', event);
     }
+  }
+
+  /**
+   * Called by NotificationsService (Phase 1 Step 9) right after a
+   * `CHILD_BOARDED`/`CHILD_DROPPED_OFF` notification is durably created —
+   * pushed into the same child room the live transport updates already
+   * use, not a second namespace. Only these two child-specific event types
+   * push in realtime this phase; trip-level (cancelled/no-show) and staff
+   * notifications are in-app + REST poll only — see
+   * docs/adr/0016-notifications-and-alerts.md for why that's an accepted
+   * scope cut, not an oversight.
+   */
+  emitNotificationToChild(studentId: string, notification: NotificationDto): void {
+    this.server.to(this.childRoom(studentId)).emit('parent.notification.created', notification);
   }
 
   private childRoom(studentId: string): string {
