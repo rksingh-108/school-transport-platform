@@ -346,32 +346,97 @@ create table attendants (
 ```
 
 ### `routes`, `route_stops`
+
+Implemented in Phase 1 Step 4 (`RoutesModule`/`RouteStopsModule`). A Route is
+a reusable **planned path** — never a specific day's execution, never bound
+to a specific bus/driver/attendant. That binding is the future Trip model's
+job (`trips.bus_id`/`driver_id`/`attendant_id`, below), which is
+time-bound (`service_date` + `shift`) in a way a Route template
+deliberately isn't. A `default_bus_id` field from the Phase 0 scaffold was
+removed for exactly this reason — it modeled a permanent route↔bus binding
+this phase's design rules out. See [§8](#8-data-model-principle-fleet-domain)'s
+"Route vs. Trip" note.
+
+`direction` (`HOME_TO_SCHOOL`/`SCHOOL_TO_HOME`) is distinct from `shift`
+(`MORNING_PICKUP`/`AFTERNOON_DROP`/`CUSTOM`) — the two are highly correlated
+in practice but independent facts (a `CUSTOM`-shift activity route could run
+either direction), so both are kept rather than inferring one from the
+other.
+
+`status`: `ACTIVE` (in use, referenceable by new Trips once Trips exist) and
+`INACTIVE` (temporarily not run) are both reversible via a normal `PATCH`.
+`ARCHIVED` is terminal — set only via `POST /routes/:id/archive`, mirroring
+`Bus.status`'s `RETIRED`. A route is **never physically deleted**: a Trip may
+reference it historically once Trips exist, so it must remain resolvable.
+
 ```sql
 create table routes (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
+  code text, -- optional short reference (e.g. "R-01"), unique per school when set
   name text not null,
+  direction text not null check (direction in ('HOME_TO_SCHOOL','SCHOOL_TO_HOME')),
   shift text not null check (shift in ('MORNING_PICKUP','AFTERNOON_DROP','CUSTOM')),
-  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE')),
-  default_bus_id uuid references buses(id),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','ARCHIVED')),
+  description text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  deleted_at timestamptz
+  deleted_at timestamptz,
+  unique (school_id, code)
 );
+```
 
+**Route↔Stop relationship**: stops are **route-owned**, not a separate
+reusable "physical stop" entity shared across routes. A school where
+`Route A → Main Gate` and `Route B → Main Gate` simply gets two `RouteStop`
+rows with the same name/coordinates — a small, harmless duplication of a
+name+coordinates tuple. A `PhysicalStop ← RouteStop` indirection was
+considered and rejected for MVP: nothing today needs to query "every route
+serving this physical location," and the extra join/CRUD surface would be
+unused complexity until that need is concrete. If it ever is, the
+route-owned model migrates cleanly (extract the distinct name/coordinate
+tuples into a new table, backfill `RouteStop.physical_stop_id`).
+
+`expected_offset_minutes` is an offset from trip start, not an absolute
+time — a Route is a template with no start time of its own; an absolute ETA
+only exists once a Trip (which has a `service_date`) exists. `mode`
+(`PICKUP`/`DROPOFF`/`BOTH`) is modeled explicitly per stop rather than
+inferred from the route's `direction`, since a real route can have
+exceptions. Sequence uniqueness (`unique(route_id, sequence_no)`) is
+enforced by the database, not just application validation — reordering
+(`POST /routes/:routeId/stops/reorder`) shifts every affected stop to a
+temporary out-of-range sequence number first, in the same transaction, so
+the final pass writing real sequence numbers 1..N can never collide with an
+existing value.
+
+```sql
 create table route_stops (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
   route_id uuid not null references routes(id) on delete cascade,
   sequence_no int not null,
   name text not null,
-  latitude double precision not null,
-  longitude double precision not null,
+  address text,
+  latitude double precision not null check (latitude between -90 and 90),
+  longitude double precision not null check (longitude between -180 and 180),
   expected_offset_minutes int not null, -- offset from trip start
-  radius_meters int not null default 150, -- arrival detection tolerance
+  radius_meters int not null default 150, -- arrival detection tolerance (future GPS geofencing)
+  mode text not null default 'BOTH' check (mode in ('PICKUP','DROPOFF','BOTH')),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
   unique (route_id, sequence_no)
 );
 ```
+
+A stop is hard-deleted (`DELETE /stops/:id`) only if no `trip_students` row
+references it yet; otherwise the caller must deactivate it instead
+(`status: 'INACTIVE'`) — the same "don't break historical integrity" rule
+as routes, applied at the stop level. No PostGIS extension is used —
+`latitude`/`longitude` are plain validated `double precision` columns,
+sufficient for storing and displaying fixed points; nothing in this phase
+does geospatial querying (radius/distance calculations) that would justify
+it.
 
 ### `trips`, `trip_students`
 ```sql
@@ -672,3 +737,16 @@ redundant assignment concept now — before anything consumes either — would
 be exactly the kind of premature abstraction this project avoids. When the
 Trips module is built, it becomes the real "who's driving which bus today"
 record.
+
+### Route vs. Trip (Phase 1 Step 4)
+
+The same separation principle extends to routes: `Route` is a **reusable
+planned path** (a template — "our Route 1 morning pickup"); `Trip` is a
+**specific day's execution** of one (scaffolded in Phase 0, not yet exposed
+via any API). A `Route` has no `bus_id`/`driver_id`/`attendant_id` column for
+the same reason `Bus` has no `driver_id`/`attendant_id` — permanent
+operational binding belongs entirely to `Trip`, which already carries
+`route_id` alongside `bus_id`/`driver_id`/`attendant_id` and a
+`service_date`. See [§3](#3-core-tables-mvp)'s `routes`/`route_stops` entry
+for the Route↔Stop relationship decision (route-owned stops, no separate
+physical-stop entity).

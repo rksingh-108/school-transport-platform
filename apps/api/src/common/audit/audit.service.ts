@@ -43,7 +43,16 @@ export type ManagementAuditAction =
   | 'ATTENDANT_DEACTIVATED'
   | 'DEVICE_REGISTERED'
   | 'DEVICE_UPDATED'
-  | 'DEVICE_DEACTIVATED';
+  | 'DEVICE_DEACTIVATED'
+  | 'ROUTE_CREATED'
+  | 'ROUTE_UPDATED'
+  | 'ROUTE_STATUS_CHANGED'
+  | 'ROUTE_ARCHIVED'
+  | 'STOP_CREATED'
+  | 'STOP_UPDATED'
+  | 'STOP_REORDERED'
+  | 'STOP_DEACTIVATED'
+  | 'STOP_DELETED';
 
 @Injectable()
 export class AuditService {

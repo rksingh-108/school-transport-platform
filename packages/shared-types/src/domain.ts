@@ -129,3 +129,33 @@ export interface BusDeviceDto {
   createdAt: string;
   updatedAt: string;
 }
+
+/** A reusable planned path — never a specific day's execution (that's the future Trip). See docs/database.md §8. */
+export interface RouteDto {
+  id: string;
+  code: string | null;
+  name: string;
+  direction: 'HOME_TO_SCHOOL' | 'SCHOOL_TO_HOME';
+  shift: 'MORNING_PICKUP' | 'AFTERNOON_DROP' | 'CUSTOM';
+  status: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
+  description: string | null;
+  stopCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RouteStopDto {
+  id: string;
+  routeId: string;
+  sequenceNo: number;
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  expectedOffsetMinutes: number;
+  radiusMeters: number;
+  mode: 'PICKUP' | 'DROPOFF' | 'BOTH';
+  status: 'ACTIVE' | 'INACTIVE';
+  createdAt: string;
+  updatedAt: string;
+}

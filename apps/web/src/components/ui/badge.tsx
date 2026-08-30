@@ -18,6 +18,7 @@ const STATUS_TONE: Record<string, Tone> = {
   MAINTENANCE: 'warning',
   FAULTY: 'danger',
   RETIRED: 'neutral',
+  ARCHIVED: 'neutral',
 };
 
 export function Badge({ tone = 'neutral', children }: { tone?: Tone; children: React.ReactNode }) {

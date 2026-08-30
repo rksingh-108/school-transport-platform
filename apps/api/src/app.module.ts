@@ -18,6 +18,8 @@ import { BusesModule } from './buses/buses.module';
 import { DriversModule } from './drivers/drivers.module';
 import { AttendantsModule } from './attendants/attendants.module';
 import { BusDevicesModule } from './bus-devices/bus-devices.module';
+import { RoutesModule } from './routes/routes.module';
+import { RouteStopsModule } from './route-stops/route-stops.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -43,6 +45,8 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     DriversModule,
     AttendantsModule,
     BusDevicesModule,
+    RoutesModule,
+    RouteStopsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

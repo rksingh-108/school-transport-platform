@@ -88,7 +88,7 @@ school-transport-platform/
 │   │   │   │   ├── drivers/
 │   │   │   │   ├── attendants/
 │   │   │   │   ├── routes/
-│   │   │   │   ├── stops/
+│   │   │   │   ├── route-stops/         # named to match bus-devices' convention: sub-resource module named after the owning relationship
 │   │   │   │   ├── trips/
 │   │   │   │   ├── attendance/
 │   │   │   │   ├── gps/                 # telemetry ingestion + live state
@@ -195,7 +195,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `parent-students` | the relationship + verification status | either side's core profile |
 | `invitations` | onboarding token lifecycle (staff + parent, polymorphic) | password/credential storage (still owned by `users`/`parents`) |
 | `buses` / `bus-devices` | vehicle + device inventory | live telemetry (owned by `gps`) |
-| `routes` / `stops` | static route topology | trip execution state |
+| `routes` / `route-stops` | static route topology | trip execution state |
 | `trips` / `trip-students` | a route's execution instance + per-student manifest | attendance event history (owned by `attendance`) |
 | `attendance` | append-only boarding/drop-off events + derived current status | trip scheduling |
 | `gps` | live + historical device telemetry | camera data |

@@ -8,3 +8,5 @@ export * from './buses';
 export * from './drivers';
 export * from './attendants';
 export * from './devices';
+export * from './routes';
+export * from './stops';

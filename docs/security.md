@@ -298,6 +298,21 @@ pre-existing gap found while reviewing the seeded matrix before adding
 anything new (a manager who schedules trips/attendance needs to see the
 fleet, but has no business editing it).
 
+### 5.3 Route / Stop Authorization
+
+Route and stop management (Phase 1 Step 4) share the existing
+`routes.read`/`routes.manage` permissions — no `stops.*` permission was
+introduced, same reasoning as §5.2: a stop has no lifecycle independent of
+the route it belongs to. The seeded matrix already granted
+`TRANSPORT_MANAGER` and `PRINCIPAL` read-only route access (§2.3) before
+this phase started, so no permission-grant changes were needed here (unlike
+the buses/drivers/attendants gap found in Phase 1 Step 3). `DRIVER`,
+`BUS_ATTENDANT`, and `PARENT` receive no route/stop permissions at all —
+route *management* is a staff-planning concern, distinct from a future
+parent-facing "where is my child's bus on their route today" view, which
+will be a separate, narrowly-scoped parent endpoint once Trips exist, never
+this management API.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to

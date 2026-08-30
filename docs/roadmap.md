@@ -48,7 +48,17 @@ surface):
    anything uses either. Device credentials are deliberately unmodeled (no
    secret/credential field exists) since no real provisioning flow exists
    yet — see [security.md](security.md#device-security).
-7. **Routes, Stops**.
+7. **Routes, Stops**. **Done** — `RoutesModule`/`RouteStopsModule`. A Route
+   is a reusable planned path with no `busId`/`driverId`/`attendantId`
+   column, same separation principle as Step 6 — the future Trip model
+   (already scaffolded) is the one place a route gets bound to an actual
+   bus/driver/attendant on a given day. Stops are route-owned (no separate
+   reusable "physical stop" entity — see
+   [database.md §3](database.md#3-core-tables-mvp)'s routes/route_stops
+   entry for why). Reordering stops is atomic (two-phase sequence-number
+   shift inside one transaction) to respect the DB-enforced
+   `unique(routeId, sequenceNo)` constraint without ever colliding
+   mid-write.
 8. **Trips, Trip-Students**. Tests: driver/attendant scoped to own trip only.
 9. **Attendance** (event-sourced state machine). Tests: full status-transition
    matrix, correction events preserve history.

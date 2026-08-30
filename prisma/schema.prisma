@@ -128,6 +128,45 @@ enum Shift {
   CUSTOM
 }
 
+// Which way a route physically runs — distinct from Shift (WHEN it runs):
+// a school's morning route is virtually always HOME_TO_SCHOOL and its
+// afternoon route SCHOOL_TO_HOME, but the two are independent facts (a
+// CUSTOM-shift activity route could run either direction), so both fields
+// are kept rather than inferring one from the other. See docs/database.md.
+enum RouteDirection {
+  HOME_TO_SCHOOL
+  SCHOOL_TO_HOME
+}
+
+// ACTIVE: in current use, can be referenced by new Trips (once Trips exist).
+// INACTIVE: temporarily not run (e.g. seasonal) — reversible via a normal
+//   status update.
+// ARCHIVED: terminal — set only via POST /routes/:id/archive, never a plain
+//   status update, mirroring Bus.status's RETIRED. Never physically deleted:
+//   a Trip may reference this route historically once Trips exist, and an
+//   archived route must remain resolvable for that history.
+enum RouteStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+// Whether a stop is used for picking students up, dropping them off, or
+// both — a HOME_TO_SCHOOL route's stops are typically PICKUP-only and a
+// SCHOOL_TO_HOME route's DROPOFF-only, but modeled explicitly rather than
+// inferred from the parent route's direction, since a real route can have
+// exceptions (e.g. a stop used only for a subset of students either way).
+enum StopMode {
+  PICKUP
+  DROPOFF
+  BOTH
+}
+
+enum RouteStopStatus {
+  ACTIVE
+  INACTIVE
+}
+
 enum TripStatus {
   SCHEDULED
   IN_PROGRESS
@@ -431,7 +470,6 @@ model Bus {
 
   school    School      @relation(fields: [schoolId], references: [id])
   devices   BusDevice[]
-  routes    Route[]
   trips     Trip[]
   gpsPoints GpsPoint[]
 
@@ -509,35 +547,59 @@ model Attendant {
 // Routes / Stops
 // ---------------------------------------------------------------------------
 
+// No `busId`/`driverId`/`attendantId` field — a Route is a reusable planned
+// path, never bound to a specific vehicle or crew. That binding is the
+// future Trip model's job (bus/driver/attendant + serviceDate + shift),
+// which already exists in this schema (see below) precisely so it can be
+// the one place operational assignment happens. See docs/database.md's
+// Route-vs-Trip note. (A `defaultBusId` field from the Phase 0 scaffold was
+// removed here — it modeled exactly the permanent bus↔route binding this
+// phase's design explicitly rules out.)
 model Route {
-  id           String       @id @default(uuid())
-  schoolId     String       @map("school_id")
-  name         String
-  shift        Shift
-  status       ActiveStatus @default(ACTIVE)
-  defaultBusId String?      @map("default_bus_id")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
-  deletedAt    DateTime?    @map("deleted_at")
+  id          String         @id @default(uuid())
+  schoolId    String         @map("school_id")
+  // Short internal reference (e.g. "R-01") — optional, distinct from `name`,
+  // same optional-unique-per-school pattern as Bus.fleetNumber.
+  code        String?
+  name        String
+  direction   RouteDirection
+  shift       Shift
+  status      RouteStatus    @default(ACTIVE)
+  description String?
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  deletedAt   DateTime?      @map("deleted_at")
 
-  school     School      @relation(fields: [schoolId], references: [id])
-  defaultBus Bus?        @relation(fields: [defaultBusId], references: [id])
-  stops      RouteStop[]
-  trips      Trip[]
+  school School      @relation(fields: [schoolId], references: [id])
+  stops  RouteStop[]
+  trips  Trip[]
 
+  @@unique([schoolId, code])
   @@map("routes")
 }
 
+// Route-owned stops (not a separate reusable "physical stop" entity) — see
+// docs/database.md's Route↔Stop note for why the simpler model is
+// sufficient for MVP and what the tradeoff is if a school reuses the same
+// physical location across routes.
 model RouteStop {
-  id                    String @id @default(uuid())
-  schoolId              String @map("school_id")
-  routeId               String @map("route_id")
-  sequenceNo            Int    @map("sequence_no")
+  id                    String          @id @default(uuid())
+  schoolId              String          @map("school_id")
+  routeId               String          @map("route_id")
+  sequenceNo            Int             @map("sequence_no")
   name                  String
+  address               String?
   latitude              Float
   longitude             Float
-  expectedOffsetMinutes Int    @map("expected_offset_minutes")
-  radiusMeters          Int    @default(150) @map("radius_meters")
+  // Offset from trip start, not an absolute time — a Route is a template
+  // with no start time of its own; an absolute ETA only exists once a Trip
+  // (which has a serviceDate/start time) exists.
+  expectedOffsetMinutes Int             @map("expected_offset_minutes")
+  radiusMeters          Int             @default(150) @map("radius_meters")
+  mode                  StopMode        @default(BOTH)
+  status                RouteStopStatus @default(ACTIVE)
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
 
   school       School        @relation(fields: [schoolId], references: [id])
   route        Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)

@@ -208,26 +208,118 @@ async function seedDemoSchool() {
     route = await prisma.route.create({
       data: {
         schoolId: school.id,
+        code: 'R-01',
         name: 'Route 1 — Morning',
+        direction: 'HOME_TO_SCHOOL',
         shift: 'MORNING_PICKUP',
-        defaultBusId: bus.id,
         stops: {
           create: [
             {
               schoolId: school.id,
               sequenceNo: 1,
               name: 'Green Park Gate',
+              address: '1 Green Park Road, Bengaluru',
               latitude: 12.9716,
               longitude: 77.5946,
               expectedOffsetMinutes: 0,
+              mode: 'PICKUP',
             },
             {
               schoolId: school.id,
               sequenceNo: 2,
               name: 'Lake View Apartments',
+              address: '14 Lake View Layout, Bengaluru',
               latitude: 12.9784,
               longitude: 77.6408,
               expectedOffsetMinutes: 10,
+              mode: 'PICKUP',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 3,
+              name: 'Cedar Heights',
+              address: '22 Cedar Heights, Bengaluru',
+              latitude: 12.9855,
+              longitude: 77.6023,
+              expectedOffsetMinutes: 18,
+              mode: 'PICKUP',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 4,
+              name: 'Oak Street Corner',
+              address: 'Oak Street & 3rd Cross, Bengaluru',
+              latitude: 12.9912,
+              longitude: 77.5891,
+              expectedOffsetMinutes: 26,
+              mode: 'PICKUP',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 5,
+              name: 'Maple Court',
+              address: '5 Maple Court, Bengaluru',
+              latitude: 12.9760,
+              longitude: 77.6150,
+              expectedOffsetMinutes: 33,
+              mode: 'PICKUP',
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  let afternoonRoute = await prisma.route.findFirst({ where: { schoolId: school.id, name: 'Route 1 — Afternoon' } });
+  if (!afternoonRoute) {
+    afternoonRoute = await prisma.route.create({
+      data: {
+        schoolId: school.id,
+        code: 'R-02',
+        name: 'Route 1 — Afternoon',
+        direction: 'SCHOOL_TO_HOME',
+        shift: 'AFTERNOON_DROP',
+        stops: {
+          create: [
+            {
+              schoolId: school.id,
+              sequenceNo: 1,
+              name: 'Maple Court',
+              address: '5 Maple Court, Bengaluru',
+              latitude: 12.9760,
+              longitude: 77.6150,
+              expectedOffsetMinutes: 8,
+              mode: 'DROPOFF',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 2,
+              name: 'Oak Street Corner',
+              address: 'Oak Street & 3rd Cross, Bengaluru',
+              latitude: 12.9912,
+              longitude: 77.5891,
+              expectedOffsetMinutes: 16,
+              mode: 'DROPOFF',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 3,
+              name: 'Lake View Apartments',
+              address: '14 Lake View Layout, Bengaluru',
+              latitude: 12.9784,
+              longitude: 77.6408,
+              expectedOffsetMinutes: 24,
+              mode: 'DROPOFF',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 4,
+              name: 'Green Park Gate',
+              address: '1 Green Park Road, Bengaluru',
+              latitude: 12.9716,
+              longitude: 77.5946,
+              expectedOffsetMinutes: 33,
+              mode: 'DROPOFF',
             },
           ],
         },
@@ -366,6 +458,53 @@ async function seedSchoolB() {
     update: {},
     create: { schoolId: school.id, busId: busB1.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-B-0001', firmwareVersion: '1.3.2' },
   });
+
+  let routeB = await prisma.route.findFirst({ where: { schoolId: school.id, name: 'Route 1 — Morning (School B)' } });
+  if (!routeB) {
+    routeB = await prisma.route.create({
+      data: {
+        schoolId: school.id,
+        code: 'B-R-01',
+        name: 'Route 1 — Morning (School B)',
+        direction: 'HOME_TO_SCHOOL',
+        shift: 'MORNING_PICKUP',
+        stops: {
+          create: [
+            {
+              schoolId: school.id,
+              sequenceNo: 1,
+              name: 'Marine Drive Junction',
+              address: 'Marine Drive, Mumbai',
+              latitude: 18.9432,
+              longitude: 72.8235,
+              expectedOffsetMinutes: 0,
+              mode: 'PICKUP',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 2,
+              name: 'Bandra Market',
+              address: 'Bandra Market, Mumbai',
+              latitude: 19.0596,
+              longitude: 72.8295,
+              expectedOffsetMinutes: 15,
+              mode: 'PICKUP',
+            },
+            {
+              schoolId: school.id,
+              sequenceNo: 3,
+              name: 'Andheri Circle',
+              address: 'Andheri Circle, Mumbai',
+              latitude: 19.1197,
+              longitude: 72.8468,
+              expectedOffsetMinutes: 28,
+              mode: 'PICKUP',
+            },
+          ],
+        },
+      },
+    });
+  }
 
   const studentA1 = await prisma.student.upsert({
     where: { schoolId_admissionNumber: { schoolId: school.id, admissionNumber: 'DEV-B-0001' } },

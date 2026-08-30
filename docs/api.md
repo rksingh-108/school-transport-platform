@@ -179,11 +179,31 @@ response ever includes a credential/secret field; none exists on the model
 (§5.1 of the same doc).
 
 ### Routes / Stops
-| Method | Path | Permission |
-|---|---|---|
-| GET/POST | `/routes` | `routes.read` / `routes.manage` |
-| PATCH/DELETE | `/routes/:id` | `routes.manage` |
-| GET/POST | `/routes/:id/stops` | `routes.read` / `routes.manage` |
+
+Implemented in Phase 1 Step 4 — `apps/api/src/routes/`, `route-stops/`. A
+Route is a reusable planned path, never a specific day's execution (that's
+the future Trip) — see [database.md §8](database.md#8-data-model-principle-fleet-domain).
+No `schoolId`/`busId`/`driverId`/`attendantId` field exists on any
+create/update DTO in this group.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/routes` | `routes.read` | Cursor-paginated; `?search`, `?status`, `?direction`. Each row includes `stopCount` (a single query via Prisma's `_count`, no N+1). |
+| GET | `/routes/:id` | `routes.read` | |
+| POST | `/routes` | `routes.manage` | `{code?, name, direction, shift, description?}`. `direction`: `HOME_TO_SCHOOL`/`SCHOOL_TO_HOME`. |
+| PATCH | `/routes/:id` | `routes.manage` | Same fields, all optional, plus `status` restricted to `ACTIVE`/`INACTIVE` — `ARCHIVED` is rejected (400) with a pointer to the archive endpoint. |
+| POST | `/routes/:id/archive` | `routes.manage` | Sets `status: 'ARCHIVED'` (terminal, never a physical delete). 400 if already archived. |
+| GET | `/routes/:routeId/stops` | `routes.read` | Not paginated — ordered by `sequenceNo` ascending, always. 404 if `routeId` isn't the caller's own route. |
+| POST | `/routes/:routeId/stops` | `routes.manage` | `{name, address?, latitude, longitude, sequenceNo, expectedOffsetMinutes, radiusMeters?, mode?}`. 400 on out-of-range coordinates or a `sequenceNo` already used on this route. |
+| GET | `/stops/:id` | `routes.read` | |
+| PATCH | `/stops/:id` | `routes.manage` | Same fields except `sequenceNo` — sequence is never edited here, only through the reorder endpoint below. |
+| POST | `/routes/:routeId/stops/reorder` | `routes.manage` | `{stopIds: string[]}` — every stop id currently on the route, in its new order. Atomic: sequence numbers are shifted out of range and back inside one transaction so the write can never collide with the unique `(routeId, sequenceNo)` constraint. 400 if the set of ids doesn't exactly match the route's current stops. |
+| DELETE | `/stops/:id` | `routes.manage` | Hard-deletes only if no `trip_students` row references it yet; otherwise 400 telling the caller to deactivate instead (`PATCH` with `status: 'INACTIVE'`). |
+
+Stop endpoints are gated by `routes.read`/`routes.manage`, not a separate
+`stops.*` permission — same reasoning as bus devices reusing
+`buses.read`/`buses.manage` (§5.2 of security.md): a stop has no lifecycle
+independent of its route.
 
 ### Trips
 | Method | Path | Permission |
