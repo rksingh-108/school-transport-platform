@@ -44,7 +44,8 @@ requirements this document does not attempt to interpret authoritatively.
 | Camera footage/clips/streaming (Phase 2, not yet built) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
 | Safety events & emergencies (Phase 2 Step 12) | Human operator/driver/attendant, own-trip-scoped for the latter two; system-generated for a fired operational safety rule (Phase 2 Step 13) | `safety_events.*`/`emergency.*` roles only; **never parents** | Never purged/hard-deleted — operational history, see §4 |
 | Geofences & safety rules (Phase 2 Step 13) | School staff (configuration only) | `geofences.*`/`safety_rules.*` roles only; **never parents, never drivers/attendants** | Geofences never hard-deleted once referenced (terminal `ARCHIVED` status); safety rules kept indefinitely, enabled/disabled only. Transient debounce/cooldown state lives in Redis only, never retained as history — see [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) |
-| AI safety events (Phase 3) | AI service | `ai_events.read/review` roles only | Tied to incident retention if escalated; otherwise short-lived |
+| AI model registry (Phase 3 Step 14) | SUPER_ADMIN (registration only) | `platform.ai_models.read/manage`, SUPER_ADMIN only; **never school staff, never parents** | Platform-wide, not per-school; version rows never mutated/deleted, only status-transitioned — see [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) |
+| AI observations (Phase 3 Step 14) | Authenticated edge device (`EDGE_COMPUTER`), one per detected event, deduplicated within a time window | `ai_events.read` roles only; **never parents, never drivers/attendants** | No retention/purge job yet — same not-yet-decided state as GPS telemetry (see §4). No `SafetyEvent` is ever auto-created from one (Step 15's job) |
 | Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
@@ -196,7 +197,13 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
   all; their transport tracking view continues to show only the
   pre-existing safe location summary, unchanged by this step (see
   [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)).
-- AI-generated events or confidence scores.
+- AI-generated observations, detection types, confidence scores, model
+  metadata, or camera-frame/edge-device internals of any kind (Phase 3
+  Step 14) — no parent-audience route or DTO field exists for
+  `AIObservation`/`AIModel`, and no AI event is ever pushed on the parent
+  realtime channel. A parent has no way to learn that edge-AI processing
+  exists on their child's bus at all through this system — see
+  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
 - Incident records or investigation notes.
 - Any other student's data, including siblings' classmates on the same bus.
 - Any other bus/route not currently carrying their verified child.
@@ -256,17 +263,55 @@ child's data" are a first-class query against `audit_logs`, not an afterthought.
 
 ## 6. AI-Specific Privacy Controls
 
-See [ai-safety.md](ai-safety.md) for the full model. Privacy-relevant constraints:
+See [ai-safety.md](ai-safety.md) for the original design model and
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) for
+what Phase 3 Step 14 actually implemented (the pipeline foundation only —
+device auth, model registry, `AIObservation` ingestion/reads; no
+review/promotion workflow yet). Privacy-relevant constraints, updated to
+reflect what is real as of Step 14:
 
-- AI event taxonomy is behavior/safety-based (`POTENTIAL_FALL`, `DOOR_OPEN_IN_MOTION`,
-  etc.) — never identity- or character-based labels. See
-  [ai-safety.md](ai-safety.md#event-taxonomy).
-- Prefer edge inference (on the bus) over shipping raw video to the cloud; only
-  event metadata + a short evidentiary clip (when an event fires) leaves the
-  vehicle, not continuous footage.
-- AI outputs are never directly shown to parents, never auto-communicated to
-  parents, and never used to auto-generate a disciplinary or behavioral record for
-  a child.
+- **Edge inference is the only implemented path, and no raw video/frame
+  ever reaches this platform.** The edge device runs inference locally and
+  submits only a small, structured, already-normalized result (detection
+  type, a bounded confidence number, a timestamp, model name/version, an
+  optional small metadata blob) — there is no endpoint anywhere in this
+  codebase that accepts a frame, a clip, or any video payload.
+- **No facial recognition, no biometric embeddings, no identity matching,
+  structurally, not just by policy.** `AIDetectionType` is a closed,
+  objective, physical-event enum (`PERSON_DETECTED`, `PERSON_COUNT`,
+  `OBJECT_DETECTED`, `FALL_DETECTED`, `SMOKE_DETECTED`, `FIRE_DETECTED`,
+  `DOOR_STATE_DETECTED`, `UNUSUAL_MOTION`) — there is no schema value,
+  column, or code path in this module that could carry a face embedding, a
+  biometric template, or a `studentId`. `AIObservationDto` has no identity
+  field of any kind. The hypothetical future biometric *boarding* feature
+  ai-safety.md and §1 above already flag as a fully separate, legally-
+  reviewed decision remains untouched — nothing in this step moves toward
+  it implicitly.
+- **No evidence/snapshot storage exists.** `AIObservation.evidenceReference`
+  is always `null` in this step — no clip/snapshot storage integration was
+  built, and none is fabricated to look like one.
+- **Parent has zero AI-observation access.** No parent-audience route, DTO
+  field, or realtime event exists for `AIObservation`/`AIModel` anywhere —
+  see §3 below.
+- **AI observations are internal operational data**, visible only to staff
+  holding `ai_events.read` (a pre-existing, Phase-0-reserved permission —
+  see [security.md](security.md#23-default-role--permission-matrix-mvp-scope-phase-23-permissions-granted)).
+  Model confidence is a statement about the model's own certainty in the
+  detection, never a probability of harm, guilt, or any judgment about a
+  person — this distinction is documented on the DTO itself and surfaced
+  in the staff UI, not left implicit.
+- **Retention is not yet decided** — `AIObservation` rows have no purge job
+  and no configured retention window in this step, the same
+  not-yet-decided state GPS telemetry and other operational tables are
+  already in (see §4); this remains a business/legal decision, not an
+  engineering default.
+- **The human-review boundary is structural, not just planned.** No code
+  path in this step creates a `SafetyEvent` or `Emergency` from an
+  `AIObservation`, and no review/promote/dismiss endpoint exists at all —
+  every observation this step can ever produce stays `CANDIDATE` forever
+  until Step 15 adds that workflow.
+- This section makes no legal-compliance claim — see the checklist in §7
+  below, which still applies in full to this new data category.
 
 ## 7. Compliance Checklist (⚠️ all items require legal/privacy professional review
 before production launch — this is an engineering starting point, not a compliance

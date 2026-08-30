@@ -379,6 +379,57 @@ existing Step 12 pipeline — there is no separate "geofence alert" or
 this codebase, and no geofence/rule field on any parent DTO — see
 [privacy.md](privacy.md).
 
+### Edge AI / Computer Vision Pipeline (Phase 3 Step 14)
+
+Implemented — `apps/api/src/ai-observations/`. Edge-device authentication,
+a platform-wide AI model registry, and candidate-detection ("AI
+observation") ingestion/reads. No AI → SafetyEvent promotion, no
+human-review workflow, no facial/biometric recognition — see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
+
+**Device-facing** (`@Public()`, authenticated by an `EDGE_COMPUTER`
+`BusDevice`'s opaque bearer credential — issued/rotated via the existing
+generic `POST /devices/:id/credential`, never a staff/parent token):
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/edge-ai/observations` | `{cameraId, detectionType, confidence, occurredAt, modelName, modelVersion, metadata?}`. `cameraId` must belong to the authenticated device's own tenant/bus AND be explicitly assigned to this device (`Camera.edgeDeviceId`) — 404 otherwise. `modelName`/`modelVersion` resolved against the `ACTIVE` model registry entry — 400 if unknown/inactive. `tripId` is never accepted from the device — always server-resolved from the bus's current `IN_PROGRESS` trip. A repeated detection of the same type from the same camera within `AI_OBSERVATION_DEDUP_WINDOW_SECONDS` (default 30s) updates the existing candidate row instead of creating a new one. `occurredAt` outside `AI_OBSERVATION_MAX_FUTURE_SKEW_SECONDS`/`AI_OBSERVATION_MAX_PAST_AGE_SECONDS` is rejected (400). Response is a full `AIObservationDto`. |
+| POST | `/edge-ai/heartbeat` | Health-only ping (no "online" field) — arrival of the authenticated request, recorded as `lastSeenAt`, is the entire signal, same convention as camera heartbeats. `{firmwareVersion?, activeModel?, activeModelVersion?, health?}`. |
+
+**Staff-facing** (`@RequireAudience('STAFF')`, gated by the pre-existing,
+Phase-0-reserved `ai_events.read` permission — see ADR 0021 Decision 10):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/ai-observations` | Cursor-paginated; `?detectionType`, `?status`, `?busId`, `?cameraId`, `?minConfidence`, `?from`, `?to`. |
+| GET | `/ai-observations/:id` | |
+| GET | `/ai-observations/provider-status` | `{status: 'AI_NOT_CONFIGURED'\|'AI_READY', message}` — `AI_NOT_CONFIGURED` unless `AI_INFERENCE_PROVIDER=MOCK` is explicitly set (rejected in production, same discipline as `CAMERA_STREAM_PROVIDER`). Never implies real inference is running centrally — see ADR 0021 Decision 2. |
+
+No create/update/delete route exists for staff on `/ai-observations` — it
+is written only by the device-facing endpoint above, and there is no
+review/promote endpoint yet (Step 15). `DRIVER`/`BUS_ATTENDANT` hold no AI
+permission at all (no broad dashboard for either role); there is no
+parent-facing AI endpoint anywhere in this codebase.
+
+**AI Model Registry** (`/ai-models`, platform-wide, gated by
+`platform.ai_models.read`/`.manage` — `SUPER_ADMIN` only, no school-level
+staff role holds either):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/ai-models` | Cursor-paginated; `?status`, `?modelType`. |
+| GET | `/ai-models/:id` | |
+| POST | `/ai-models` | `{name, version, provider, modelType}`. Registers a NEW version row — `(name, version)` unique; a duplicate is 400. Created `status: 'ACTIVE'`. |
+| POST | `/ai-models/:id/activate` | |
+| POST | `/ai-models/:id/deactivate` | |
+| POST | `/ai-models/:id/deprecate` | Terminal — no endpoint moves a model out of `DEPRECATED`. |
+
+There is no PATCH on `/ai-models/:id` — `name`/`version`/`provider`/
+`modelType` are immutable once registered (see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+Decision 6); only `status` transitions, and only through the dedicated
+endpoints above.
+
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
 `ParentSelfController`/`ParentTransportController` (`@RequireAudience('PARENT')`,
@@ -449,12 +500,13 @@ their own alerts, never another admin's.
 ## 3. Phase 2/3 Endpoint Groups (outlined, not built yet)
 
 `/cameras` (§2, Phase 2 Step 11), `/safety-events`+`/emergencies` (§2,
-Phase 2 Step 12), and `/geofences`+`/safety-rules` (§2, Phase 2 Step 13)
-are now built. Streaming/recording playback, camera-triggered events,
-AI-produced safety events, and everything below remain outlined only:
+Phase 2 Step 12), `/geofences`+`/safety-rules` (§2, Phase 2 Step 13), and
+`/edge-ai`+`/ai-observations`+`/ai-models` (§2, Phase 3 Step 14) are now
+built. Streaming/recording playback, camera-triggered events, and
+everything below remain outlined only:
 
-- `/ai-events`, `/ai-events/:id/review` — `ai_events.read` / `ai_events.review`
-- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt concept from `/safety-events` (see database.md §4)
+- `/ai-observations/:id/review` — an AI-observation review/promotion action, folding a candidate observation into a `SafetyEvent` — Step 15, per [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) Decision 7. `ai_events.review` is already reserved for this (granted to `TRANSPORT_ADMIN`/`SECURITY`) but unused until this endpoint exists.
+- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt concept from both `/safety-events` and `/ai-observations` (see database.md §4)
 
 None of these are exposed to the parent namespace, ever (see
 [privacy.md](privacy.md)).
@@ -531,10 +583,27 @@ None of these are exposed to the parent namespace, ever (see
   added for operational safety rules; see
   [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md).
   See [ADR 0019](adr/0019-safety-events-and-emergency-management.md).
+- **`/realtime/ai-observations` (Socket.IO namespace, staff only —
+  implemented Phase 3 Step 14)**: a separate namespace from
+  `/realtime/safety`, gated by `ai_events.read` — the same permission that
+  gates the REST `/ai-observations` endpoints. Same handshake shape
+  (`auth: { token }`); a missing/invalid/parent token, or a staff token
+  lacking `ai_events.read` (`DRIVER`/`BUS_ATTENDANT`, who hold neither), is
+  disconnected immediately. Single whole-school room
+  (`school:{schoolId}:ai-observations`), no `@SubscribeMessage` handler.
+  Server pushes only AFTER `AiObservationsService.ingest()` has already
+  deduplicated/aggregated a raw detection into a candidate observation —
+  never once per raw inference frame:
+  ```
+  ai.observation.created  — an AIObservationDto, on a genuinely new candidate observation
+  ai.observation.updated  — an AIObservationDto, when a repeated detection aggregates into an existing one within its dedup window
+  ```
+  See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
 - `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
   outline names; the implemented namespace/event names differ
-  (`/realtime/fleet`, `/realtime/parent`, `/realtime/safety`) and this
-  section now reflects what actually ships.
+  (`/realtime/fleet`, `/realtime/parent`, `/realtime/safety`,
+  `/realtime/ai-observations`) and this section now reflects what actually
+  ships.
 
 ## 5. Versioning
 

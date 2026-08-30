@@ -24,6 +24,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/emergencies', label: 'Emergencies', permission: 'emergency.read' },
   { href: '/dashboard/geofences', label: 'Geofences', permission: 'geofences.read' },
   { href: '/dashboard/safety-rules', label: 'Safety Rules', permission: 'safety_rules.read' },
+  { href: '/dashboard/ai-observations', label: 'AI Observations', permission: 'ai_events.read' },
   { href: '/dashboard/notifications', label: 'Alerts', permission: 'notifications.read' },
 ] as const;
 

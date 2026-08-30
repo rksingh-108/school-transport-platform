@@ -884,6 +884,60 @@ Redis-only working state, one small JSON key per `(rule, bus)` pair —
 never persisted here; see ADR 0020 Decision 3 for the recovery behavior
 if that key is lost.
 
+### `ai_models`, `ai_observations` (Phase 3 Step 14)
+See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) for
+the full design. `ai_models` is a platform-wide model registry (no
+`school_id` — a shared ML asset, not a per-tenant resource, same precedent
+as the pre-existing `permissions` table). `ai_observations` is the
+per-school candidate-detection record an authenticated edge device reports
+— deliberately NOT a `safety_events` row; that promotion is Step 15's job.
+```sql
+create table ai_models (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  version text not null,  -- immutable together with name once created — see the ADR
+  provider text not null,
+  model_type text not null check (model_type in ('OBJECT_DETECTION','POSE_ESTIMATION','ACTION_RECOGNITION','SMOKE_FIRE_DETECTION')),
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','INACTIVE','DEPRECATED')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (name, version)
+);
+
+create table ai_observations (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  bus_id uuid not null references buses(id),
+  trip_id uuid references trips(id),        -- server-resolved (bus's current IN_PROGRESS trip); never accepted from the device
+  camera_id uuid not null references cameras(id),
+  edge_device_id uuid not null references bus_devices(id),  -- deviceType EDGE_COMPUTER; the authenticated device
+  model_id uuid not null references ai_models(id),
+  model_version text not null,  -- denormalized snapshot, resilient to later model status changes
+  detection_type text not null check (detection_type in ('PERSON_DETECTED','PERSON_COUNT','OBJECT_DETECTED','FALL_DETECTED','SMOKE_DETECTED','FIRE_DETECTED','DOOR_STATE_DETECTED','UNUSUAL_MOTION')), -- objective, physical-event only — no identity/emotion/subjective classification
+  confidence double precision not null,  -- model confidence in the detection, 0.0-1.0 — never a probability of harm/guilt
+  occurred_at timestamptz not null,   -- edge-reported time
+  received_at timestamptz not null default now(),  -- server receipt time — authoritative for ordering/security
+  window_start timestamptz not null,  -- dedup/temporal-aggregation bucket, see the ADR
+  status text not null default 'CANDIDATE' check (status in ('CANDIDATE','REVIEWED','DISMISSED','PROMOTED')), -- only CANDIDATE is ever set this step
+  evidence_reference text,  -- always null this step — no evidence-storage integration exists; never fabricated
+  metadata jsonb,  -- small, bounded (Zod-enforced) blob only
+  created_at timestamptz not null default now(),
+  unique (edge_device_id, camera_id, detection_type, window_start)
+);
+create index on ai_observations (school_id, occurred_at);
+create index on ai_observations (camera_id, occurred_at);
+create index on ai_observations (bus_id, occurred_at);
+create index on ai_observations (trip_id, occurred_at);
+create index on ai_observations (detection_type, occurred_at);
+create index on ai_observations (status, occurred_at);
+```
+`cameras.edge_device_id` (nullable, FK to `bus_devices`) is the new column
+this step adds to the existing `cameras` table — which EDGE_COMPUTER device
+(if any) is assigned to process that camera's feed; see the ADR's "camera
+→ edge-device assignment" decision. No face embeddings, no biometric
+identifiers, and no `student_id` column exists anywhere in either table —
+there is no schema shape here that could carry identity data.
+
 ### `audit_logs`
 ```sql
 create table audit_logs (
@@ -935,11 +989,19 @@ mint a short-lived signed URL after an authorization check — see
 - `camera_events(id, school_id, camera_id, kind[OFFLINE|OBSTRUCTED|HEARTBEAT], ...)` —
   `cameras` itself now exists (§3, Phase 2 Step 11); this event/history log
   does not yet.
-- `ai_events(id, school_id, bus_id, camera_id, event_type, confidence, severity, occurred_at, clip_file_id, model_version, status[NEW|REVIEWED|DISMISSED], metadata jsonb)`
-- `incidents(id, school_id, ai_event_id nullable, opened_by, status[OPEN|INVESTIGATING|RESOLVED], severity, summary, resolution, resolved_at, ...)` —
-  a distinct, still-unbuilt concept from `safety_events` (§3, Phase 2
-  Step 12): this is the future AI-events-adjudication pipeline, not the
-  human-operator safety-observation workflow that now exists.
+- `ai_events(...)` — superseded by the real `ai_models`/`ai_observations`
+  tables (§3, Phase 3 Step 14); the concept this row speculatively outlined
+  ("AI-generated candidate events") is exactly what `ai_observations` now
+  is, under more precise naming. See
+  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+  Decision 10.
+- `incidents(id, school_id, ai_observation_id nullable, opened_by, status[OPEN|INVESTIGATING|RESOLVED], severity, summary, resolution, resolved_at, ...)` —
+  a distinct, still-unbuilt concept from both `safety_events` (§3, Phase 2
+  Step 12) and `ai_observations` (§3, Phase 3 Step 14): the future
+  human-adjudicated incident record, expected to be built in Step 15
+  alongside the AI-observation review/promotion workflow — not the
+  human-operator safety-observation workflow or the raw AI-observation
+  record, both of which already exist.
 - `incident_events(id, incident_id, actor_id, action, notes, occurred_at)` — append-only
   investigation trail, same pattern as `attendance_events`.
 

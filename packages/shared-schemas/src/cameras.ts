@@ -47,6 +47,10 @@ export const updateCameraSchema = z
     // Reassignment to a different bus — must belong to the same tenant,
     // re-verified server-side exactly like creation's busId path param.
     busId: z.string().uuid().optional(),
+    // Which EDGE_COMPUTER device (Phase 3 Step 14) processes this camera's
+    // feed — re-verified server-side (same tenant/bus, deviceType
+    // EDGE_COMPUTER, status ACTIVE). `null` explicitly unassigns.
+    edgeDeviceId: z.string().uuid().nullable().optional(),
   })
   .refine((v) => v.position !== 'CUSTOM' || !!v.customPositionLabel, {
     message: 'customPositionLabel is required when position is CUSTOM.',

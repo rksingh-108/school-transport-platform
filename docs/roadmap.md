@@ -274,12 +274,54 @@ surface):
    this remains the future AI-events-adjudication pipeline.
 
 ## Phase 3 — Edge AI
-1. `apps/ai-service` implementation against the `AIInferenceProvider` /
-   `SafetyEventDetector` interfaces defined in [ai-safety.md](ai-safety.md).
-2. `ai_events` module + human review workflow + linkage into `incidents`.
-3. Model registry + per-school severity mapping configuration.
-4. Edge deployment path (on-bus inference box) as an alternative to centralized
-   inference, validated against real hardware partners.
+1. **Edge AI / computer vision pipeline foundation. Done, Step 14** —
+   `AiObservationsModule` (`apps/api/src/ai-observations/`): edge-device
+   authentication reusing the existing `BusDevice` (`EDGE_COMPUTER`,
+   reserved since Phase 1) and opaque bearer-credential mechanism — no
+   second device-identity/credential system; a platform-wide `AIModel`
+   registry (immutable versioned rows, `SUPER_ADMIN`-only via new
+   `platform.ai_models.read`/`.manage`); and `AIObservation` ingestion
+   (`POST /edge-ai/observations`) with time-windowed dedup/temporal
+   aggregation and replay/clock-skew timestamp bounds — no PostGIS-style
+   second pipeline, no heavy inference inside this monolith (all real
+   inference runs at the edge, outside this process; the API only ever
+   receives an already-normalized result). `Camera.edgeDeviceId` links a
+   camera to the edge device assigned to process it, tenant/bus-verified.
+   Staff-only reads (`GET /ai-observations`, reusing the pre-existing
+   Phase-0-reserved `ai_events.read` permission) and a `/realtime/
+   ai-observations` staff namespace, emitting only after dedup, never per
+   raw frame. `AIObservation` is explicitly NOT a `SafetyEvent` — no code
+   path promotes one automatically; that human-review workflow is Step
+   15's job. A closed, objective detection taxonomy (`PERSON_DETECTED`,
+   `FALL_DETECTED`, `SMOKE_DETECTED`, etc.) with **no facial recognition,
+   no biometric embeddings, and no `studentId`/identity field anywhere in
+   the schema** — see
+   [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
+   Staff UI at `/dashboard/ai-observations` (list + detail, read-only, "No
+   evidence attached" rather than fabricated media); the existing generic
+   bus-device-management UI already covers `EDGE_COMPUTER` registration/
+   status, extended this step to also support credential issuance (was
+   `GPS_TRACKER`-only). Tests: 9 unit tests (dedup-window bucketing,
+   timestamp-bounds validation) plus 35 e2e tests (device auth, ingestion
+   IDOR, staff RBAC, AI model registry lifecycle, camera↔edge-device
+   association, realtime authorization, RLS) — confirmed both in the e2e
+   suite and live against the running server (a real edge-device
+   credential issued through the UI, used to submit a real observation via
+   the authenticated endpoint, visible live in the dashboard with zero
+   notification triggered; driver/parent/non-SUPER_ADMIN denied by real
+   403s). **Not done** (explicitly deferred, per this step's own scope):
+   `apps/ai-service` (no separate Python inference service exists or is
+   needed yet — inference is the edge device's own concern, outside this
+   codebase entirely), any AI → SafetyEvent/Emergency promotion or
+   human-review workflow, per-school severity mapping, `incidents` linkage,
+   and any facial/behavioral/identity recognition.
+2. AI observation review/promotion workflow (`AIObservation` →
+   human-reviewed → `SafetyEvent`) + linkage into `incidents` — Step 15.
+3. Per-school severity mapping configuration for AI-derived events — Step
+   15 or later.
+4. Real on-edge model deployment/validation against actual hardware
+   partners — the architecture (edge-first, normalized-result-only) is in
+   place per Step 14; no physical device integration has been attempted.
 
 ## Phase 4 — Enterprise/Scale
 1. Advanced analytics/reporting.

@@ -110,6 +110,31 @@ export const envSchema = z.object({
   // math. Devices that don't report accuracy at all are still evaluated
   // (there is nothing to compare against).
   SAFETY_RULES_MAX_ACCURACY_M: z.coerce.number().int().positive().default(100),
+
+  // Edge AI / computer vision pipeline foundation (Phase 3 Step 14) — see
+  // docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md. No real
+  // inference runs inside this monolith — NOT_CONFIGURED (the default)
+  // reports AI_NOT_CONFIGURED honestly; MOCK is a clearly-labeled dev/
+  // test-only status simulator, explicitly rejected in production below,
+  // the same discipline as CAMERA_STREAM_PROVIDER/the GPS dev simulator.
+  AI_INFERENCE_PROVIDER: z.enum(['NOT_CONFIGURED', 'MOCK']).default('NOT_CONFIGURED'),
+  // A repeated detection of the same type from the same camera+edge device
+  // within this many seconds updates the existing candidate observation
+  // (latest confidence/timestamp wins) instead of creating a new row — the
+  // temporal-aggregation/dedup window. See AiObservationsService.
+  AI_OBSERVATION_DEDUP_WINDOW_SECONDS: z.coerce.number().int().positive().default(30),
+  // Replay/clock-skew bounds, same spirit as GPS_MAX_FUTURE_SKEW_SECONDS/
+  // GPS_MAX_PAST_AGE_DAYS but tighter — an AI observation is a near-realtime
+  // report of a just-happened detection, not historical telemetry, so a
+  // much older "past" bound is appropriate than GPS's multi-day allowance.
+  AI_OBSERVATION_MAX_FUTURE_SKEW_SECONDS: z.coerce.number().int().positive().default(120),
+  AI_OBSERVATION_MAX_PAST_AGE_SECONDS: z.coerce.number().int().positive().default(3600),
+  // Below this, an observation is rejected outright at ingestion (400) as
+  // too weak to be worth storing — never silently turned into an alert
+  // either way; there is no automatic escalation behavior tied to
+  // confidence in this step regardless of this threshold's value. Default
+  // 0 accepts every value Zod's own 0..1 bound already allows.
+  AI_OBSERVATION_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -162,6 +187,9 @@ export function validateEnv(config: Record<string, unknown>): Env {
     }
     if (env.CAMERA_STREAM_PROVIDER === 'MOCK') {
       problems.push('CAMERA_STREAM_PROVIDER must not be MOCK in production — it is a dev/test-only simulated stream.');
+    }
+    if (env.AI_INFERENCE_PROVIDER === 'MOCK') {
+      problems.push('AI_INFERENCE_PROVIDER must not be MOCK in production — it is a dev/test-only status simulator.');
     }
     if (problems.length > 0) {
       throw new Error(`Refusing to start with NODE_ENV=production using unsafe configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);

@@ -167,7 +167,34 @@ async function seedPlatformOperator() {
   });
 }
 
-async function seedDemoSchool() {
+/**
+ * The AI model registry (Phase 3 Step 14) is platform-wide, not per-school
+ * — see docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md —
+ * so it's seeded once here, before either school, and passed into both.
+ * Two versions of the same model demonstrate that "updating" a model means
+ * registering a new version row, never mutating an existing one — see
+ * AiModelsService.
+ */
+async function seedAiModels() {
+  const personDetector = await prisma.aIModel.upsert({
+    where: { name_version: { name: 'person-detector', version: '1.3.0' } },
+    update: {},
+    create: { name: 'person-detector', version: '1.3.0', provider: 'internal', modelType: 'OBJECT_DETECTION', status: 'ACTIVE' },
+  });
+  await prisma.aIModel.upsert({
+    where: { name_version: { name: 'person-detector', version: '1.2.0' } },
+    update: {},
+    create: { name: 'person-detector', version: '1.2.0', provider: 'internal', modelType: 'OBJECT_DETECTION', status: 'DEPRECATED' },
+  });
+  const fallDetector = await prisma.aIModel.upsert({
+    where: { name_version: { name: 'fall-detector', version: '1.0.0' } },
+    update: {},
+    create: { name: 'fall-detector', version: '1.0.0', provider: 'internal', modelType: 'ACTION_RECOGNITION', status: 'ACTIVE' },
+  });
+  return { personDetector, fallDetector };
+}
+
+async function seedDemoSchool(aiModels: { personDetector: { id: string; version: string }; fallDetector: { id: string; version: string } }) {
   const passwordHash = await argon2.hash(DEV_PASSWORD);
 
   const school = await prisma.school.upsert({
@@ -280,7 +307,7 @@ async function seedDemoSchool() {
     update: {},
     create: { schoolId: school.id, busId: bus2.id, deviceType: 'GPS_TRACKER', externalDeviceId: 'DEV-GPS-A-0002', firmwareVersion: '1.4.0' },
   });
-  await prisma.busDevice.upsert({
+  const deviceEdgeA1 = await prisma.busDevice.upsert({
     where: { deviceType_externalDeviceId: { deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-A-0001' } },
     update: {},
     create: { schoolId: school.id, busId: bus.id, deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-A-0001' },
@@ -300,6 +327,9 @@ async function seedDemoSchool() {
     position: 'FRONT' | 'CABIN' | 'REAR' | 'LEFT' | 'RIGHT' | 'DOOR' | 'CUSTOM';
     serialNumber: string;
     status?: 'ACTIVE' | 'INACTIVE' | 'FAULT' | 'RETIRED';
+    // Phase 3 Step 14: the EDGE_COMPUTER BusDevice assigned to process this
+    // camera's feed, if any.
+    edgeDeviceId?: string;
   }) {
     const device = await prisma.busDevice.upsert({
       where: { deviceType_externalDeviceId: { deviceType: 'CAMERA_CONTROLLER', externalDeviceId: params.serialNumber } },
@@ -319,10 +349,18 @@ async function seedDemoSchool() {
         manufacturer: 'Hikvision',
         model: 'DS-Fleet-200',
         status: params.status ?? 'ACTIVE',
+        edgeDeviceId: params.edgeDeviceId,
       },
     });
   }
-  await upsertCamera({ busId: bus.id, cameraCode: 'CAM-A-FRONT', name: 'Front Camera', position: 'FRONT', serialNumber: 'DEV-CAM-A-0001' });
+  const cameraAFront = await upsertCamera({
+    busId: bus.id,
+    cameraCode: 'CAM-A-FRONT',
+    name: 'Front Camera',
+    position: 'FRONT',
+    serialNumber: 'DEV-CAM-A-0001',
+    edgeDeviceId: deviceEdgeA1.id,
+  });
   await upsertCamera({ busId: bus.id, cameraCode: 'CAM-A-CABIN', name: 'Cabin Camera', position: 'CABIN', serialNumber: 'DEV-CAM-A-0002' });
   await upsertCamera({
     busId: bus2.id,
@@ -917,6 +955,61 @@ async function seedDemoSchool() {
     },
   });
 
+  // Edge AI / computer vision pipeline foundation (Phase 3 Step 14) —
+  // deterministic candidate observations from the seeded edge device/camera,
+  // covering both models and a range of confidence levels. No fake
+  // SafetyEvent/Emergency is created from any of these — that boundary is
+  // Step 15's job, not this seed's. No face/biometric/identity data of any
+  // kind. See docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md.
+  const aiObsNow = Date.now();
+  await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      edgeDeviceId: deviceEdgeA1.id,
+      modelId: aiModels.personDetector.id,
+      modelVersion: aiModels.personDetector.version,
+      detectionType: 'PERSON_DETECTED',
+      confidence: 0.94,
+      occurredAt: new Date(aiObsNow - 5 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNow - 5 * 60 * 1000) / 30_000) * 30_000),
+      metadata: { count: 4 },
+    },
+  });
+  await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      edgeDeviceId: deviceEdgeA1.id,
+      modelId: aiModels.fallDetector.id,
+      modelVersion: aiModels.fallDetector.version,
+      detectionType: 'FALL_DETECTED',
+      confidence: 0.89,
+      occurredAt: new Date(aiObsNow - 3 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNow - 3 * 60 * 1000) / 30_000) * 30_000),
+      metadata: { frameWindowMs: 4000 },
+    },
+  });
+  await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      edgeDeviceId: deviceEdgeA1.id,
+      modelId: aiModels.personDetector.id,
+      modelVersion: aiModels.personDetector.version,
+      detectionType: 'UNUSUAL_MOTION',
+      confidence: 0.61,
+      occurredAt: new Date(aiObsNow - 1 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNow - 1 * 60 * 1000) / 30_000) * 30_000),
+    },
+  });
+
   return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };
 }
 
@@ -926,7 +1019,7 @@ async function seedDemoSchool() {
  * admin/staff/parent/students that must NEVER be visible to School A's users,
  * and vice versa. See docs/security.md#14-tenant-isolation.
  */
-async function seedSchoolB() {
+async function seedSchoolB(aiModels: { personDetector: { id: string; version: string }; fallDetector: { id: string; version: string } }) {
   const passwordHash = await argon2.hash(DEV_PASSWORD);
 
   const school = await prisma.school.upsert({
@@ -1015,7 +1108,14 @@ async function seedSchoolB() {
     update: {},
     create: { schoolId: school.id, busId: busB1.id, deviceType: 'CAMERA_CONTROLLER', externalDeviceId: 'DEV-CAM-B-0001', firmwareVersion: '2.0.1' },
   });
-  await prisma.camera.upsert({
+  // Phase 3 Step 14: a separate edge-AI device, exists solely for the same
+  // cross-tenant-isolation reason as the camera/GPS device above.
+  const deviceEdgeB1 = await prisma.busDevice.upsert({
+    where: { deviceType_externalDeviceId: { deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-B-0001' } },
+    update: {},
+    create: { schoolId: school.id, busId: busB1.id, deviceType: 'EDGE_COMPUTER', externalDeviceId: 'DEV-EDGE-B-0001' },
+  });
+  const cameraBFront = await prisma.camera.upsert({
     where: { schoolId_cameraCode: { schoolId: school.id, cameraCode: 'CAM-B-FRONT' } },
     update: {},
     create: {
@@ -1027,6 +1127,7 @@ async function seedSchoolB() {
       position: 'FRONT',
       manufacturer: 'Hikvision',
       model: 'DS-Fleet-200',
+      edgeDeviceId: deviceEdgeB1.id,
     },
   });
 
@@ -1187,6 +1288,26 @@ async function seedSchoolB() {
     },
   });
 
+  // One AI observation (Phase 3 Step 14) — cross-tenant isolation fixture,
+  // same reasoning as the safety event/geofence above.
+  const aiObsNowB = Date.now();
+  await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: busB1.id,
+      tripId: morningTripB.id,
+      cameraId: cameraBFront.id,
+      edgeDeviceId: deviceEdgeB1.id,
+      modelId: aiModels.personDetector.id,
+      modelVersion: aiModels.personDetector.version,
+      detectionType: 'PERSON_DETECTED',
+      confidence: 0.9,
+      occurredAt: new Date(aiObsNowB - 2 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNowB - 2 * 60 * 1000) / 30_000) * 30_000),
+      metadata: { count: 2 },
+    },
+  });
+
   return { school, students: [studentA1, studentB1], parent, admin };
 }
 
@@ -1197,10 +1318,12 @@ async function main() {
   await seedRolesAndGrants();
   console.log('Seeding platform operator tenant...');
   await seedPlatformOperator();
+  console.log('Seeding AI model registry...');
+  const aiModels = await seedAiModels();
   console.log('Seeding demo school (A)...');
-  const demo = await seedDemoSchool();
+  const demo = await seedDemoSchool(aiModels);
   console.log('Seeding second demo school (B) for cross-tenant testing...');
-  const demoB = await seedSchoolB();
+  const demoB = await seedSchoolB(aiModels);
   console.log(
     `Done. Schools: ${demo.school.slug}, ${demoB.school.slug}. Dev login password for every seeded account: ${DEV_PASSWORD}`,
   );

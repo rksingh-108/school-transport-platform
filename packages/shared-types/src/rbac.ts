@@ -102,6 +102,16 @@ export const PERMISSION_KEYS = [
   // for itself. See docs/adr/0011-school-status-platform-managed.md.
   'platform.schools.manage',
   'platform.impersonate_school',
+  // Phase 3 Step 14: the AI model registry (AIModel) is platform-wide (no
+  // schoolId column at all — a shared ML asset, not a per-school
+  // configuration; see docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md),
+  // so it follows the same `platform.*` namespace/SUPER_ADMIN-only
+  // convention as `platform.schools.*` (ADR 0011) rather than a school-level
+  // permission. No school-level staff role is ever granted either key —
+  // they see a model's name/version only as denormalized fields on the
+  // AIObservations they're permitted to read, never the registry itself.
+  'platform.ai_models.read',
+  'platform.ai_models.manage',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -119,6 +129,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'platform.schools.create',
     'platform.schools.manage',
     'platform.impersonate_school',
+    // Phase 3 Step 14 — the AI model registry is platform-wide, SUPER_ADMIN-only.
+    'platform.ai_models.read',
+    'platform.ai_models.manage',
   ],
   SCHOOL_ADMIN: [
     'schools.read',
@@ -157,6 +170,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     // (notifications.read, Step 9) while reviewing existing grants.
     'camera.read',
     'camera.manage',
+    // Phase 3 Step 14 — same reasoning as camera.read/manage above:
+    // `ai_events.*` was reserved since Phase 0 for exactly this concept
+    // (see architecture.md's module table) but had never actually been
+    // granted to this school's own top operational authority, the same
+    // class of gap fixed for camera.read/manage in Step 11.
+    'ai_events.read',
     'incidents.create',
     'incidents.read',
     'incidents.resolve',
@@ -198,6 +217,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'gps.read',
     'camera.read',
     'camera.manage',
+    // Phase 3 Step 14: `ai_events.read` added alongside the pre-existing
+    // `ai_events.review` — reviewing without being able to read observations
+    // at all was a latent gap (review presupposes read).
+    'ai_events.read',
     'ai_events.review',
     'incidents.create',
     'incidents.read',
@@ -236,6 +259,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'attendance.manage',
     'gps.read',
     'camera.read',
+    // Phase 3 Step 14 — read-only, same posture as camera.read above.
+    'ai_events.read',
     'emergency.read',
     'emergency.create',
     'emergency.manage',

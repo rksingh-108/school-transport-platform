@@ -403,14 +403,14 @@ function BusEditForm({
                 <p className="text-xs text-zinc-500">
                   Last seen: {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : 'Never'}
                   {d.firmwareVersion ? ` · Firmware ${d.firmwareVersion}` : ''}
-                  {d.deviceType === 'GPS_TRACKER'
+                  {d.deviceType === 'GPS_TRACKER' || d.deviceType === 'EDGE_COMPUTER'
                     ? ` · Credential: ${d.credentialSetAt ? `issued ${new Date(d.credentialSetAt).toLocaleDateString()}` : 'not issued'}`
                     : ''}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <StatusBadge status={d.status} />
-                {canManage && d.deviceType === 'GPS_TRACKER' && d.status !== 'INACTIVE' && (
+                {canManage && (d.deviceType === 'GPS_TRACKER' || d.deviceType === 'EDGE_COMPUTER') && d.status !== 'INACTIVE' && (
                   <Button variant="secondary" onClick={() => onRotateCredential(d.id)} disabled={busyDeviceId === d.id}>
                     {d.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
                   </Button>

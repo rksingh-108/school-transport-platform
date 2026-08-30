@@ -134,6 +134,7 @@ reports.read
 audit_logs.read
 device_health.read
 platform.schools.read, platform.schools.create, platform.schools.manage, platform.impersonate_school
+platform.ai_models.read, platform.ai_models.manage
 ```
 
 ### 2.2 Enforcement — centralized, not scattered
@@ -182,7 +183,9 @@ when those modules ship)
 | attendance.manage | – | read | read | ✓ | read | – | own trip only | – | – |
 | gps.read | – | ✓ | ✓ | ✓ | ✓ | own bus only | own bus only | ✓ | own child's bus only, via dedicated endpoint |
 | camera.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
-| ai_events.review | – | – | ✓ | – | read | – | – | ✓ | never |
+| ai_events.read | – | ✓ | ✓ | read | read | – | – | read | never |
+| ai_events.review | – | – | ✓ | – | – | – | – | ✓ | never |
+| platform.ai_models.read/manage | ✓ | – | – | – | – | – | – | – | never |
 | incidents.* | – | ✓ | ✓ | – | ✓ | – | – | ✓ | never |
 | emergency.create | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
 | emergency.read | – | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | never |
@@ -231,6 +234,25 @@ neither — unlike safety-events/emergencies, there is no create-only grant
 here at all, since drivers/attendants never configure geofences or rules
 in either direction; they only ever see the resulting `SafetyEvent` rows
 through their existing own-trip scope.
+
+`ai_events.read` — reserved since Phase 0 for exactly the "AI-generated
+candidate events" concept `AIObservation` now is (Phase 3 Step 14) — was
+granted to `SCHOOL_ADMIN`/`TRANSPORT_ADMIN`/`TRANSPORT_MANAGER` while
+reviewing existing grants: all three already held the equivalent read
+grant for every other safety-adjacent domain (camera/safety-events/
+geofences) but had never actually been granted this one, the same class of
+gap fixed for camera.read/manage in Step 11.
+`platform.ai_models.read`/`.manage` (new) follow the pre-existing
+`platform.*`/`SUPER_ADMIN`-only convention ([ADR 0011](adr/0011-school-status-platform-managed.md))
+rather than a school-level grant — the AI model registry is a platform-wide
+shared asset, not a per-school resource; see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+Decision 5. No school-level staff role, including `SCHOOL_ADMIN`, is ever
+granted either key. `DRIVER`/`BUS_ATTENDANT` hold no AI permission at
+all — unlike safety-events/emergencies, there is no create-only grant for
+either role, since neither ever submits an AI observation directly (only
+an authenticated edge device does, via its own device credential, never a
+staff/driver session).
 
 "Never" entries above are not merely unassigned permissions — the parent namespace's
 controllers (`/parent/*`) do not accept a permission grant for camera/ai/incident
@@ -671,6 +693,45 @@ never propagates to fail the GPS ingestion request — see
 [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) Decision
 4. See §6 for the specific IDOR/RBAC/GPS-integration test scenarios.
 
+### 5.12 Edge AI / Computer Vision Authorization (Phase 3 Step 14)
+
+`EdgeAiController` (`POST /edge-ai/observations`, `/heartbeat`) is
+`@Public()` + `EdgeAiDeviceAuthGuard` — authenticated only by an
+`EDGE_COMPUTER` `BusDevice`'s opaque bearer credential, never a staff/
+parent token, and never interchangeable with a GPS tracker's or camera
+controller's credential (a separate guard, same reasoning as
+[ADR 0018](adr/0018-camera-device-management-foundation.md) Decision 2).
+`schoolId`/`busId`/`edgeDeviceId`/`tripId`/`createdBy`/`reviewedBy` are
+never accepted as fields on either device-facing payload — identity is
+always resolved server-side from the authenticated device credential
+(schoolId/busId/edgeDeviceId), and `tripId` is always server-resolved from
+the bus's own current trip, the identical IDOR-by-construction pattern GPS
+ingestion and camera heartbeats already use.
+
+The one caller-supplied identifier on ingestion, `cameraId`, is verified
+against **two** conditions, not one: it must belong to the authenticated
+device's own tenant AND bus, AND that camera's `Camera.edgeDeviceId` must
+equal the authenticated device's own id — being on the same bus is
+deliberately not sufficient (see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+Decision 4). A camera that exists but isn't assigned to this device, or
+belongs to a different bus/tenant, is `404` (existence never revealed) —
+verified in the e2e suite against both a same-tenant-wrong-camera and a
+cross-tenant camera. `modelName`/`modelVersion` are resolved against the
+platform-wide model registry by natural key; an unknown or inactive
+combination is `400`, not `404` (the registry isn't tenant-scoped at all,
+so there's no tenant-existence fact to protect).
+
+`AiObservationsController`/`AiModelsController` (staff/platform reads) are
+`@RequireAudience('STAFF')`, gated by `ai_events.read` and
+`platform.ai_models.read`/`.manage` respectively (§2.3) — every
+observation/model lookup by id is tenant-scoped (observations) or globally
+readable-but-permission-gated (models, since the registry itself carries
+no tenant), so a cross-tenant observation id is `404`. There is no parent
+audience on any route in this module, no AI field on any parent DTO, and
+no AI event on the parent realtime channel. See §6 for the specific IDOR/
+RBAC/device-auth test scenarios.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to
@@ -692,6 +753,35 @@ Mandatory automated coverage before a module is considered done (ties to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 3 Step 14** (`apps/api/src/ai-observations/util/observation-window.spec.ts`,
+9 unit tests, plus `apps/api/test/ai-observations.e2e-spec.ts`, 35 e2e
+tests): unit coverage for the dedup-window bucketing function and the
+replay/clock-skew timestamp-bounds function. E2E coverage: edge-device
+authentication (missing/invalid/wrong-device-type credential rejected,
+valid credential authenticates a heartbeat and updates `lastSeenAt`,
+rotation invalidates the old credential immediately, a deactivated
+device's credential no longer authenticates); observation ingestion IDOR
+(a camera on the same bus/tenant but not assigned to this device rejected,
+a cross-tenant camera rejected, an unknown/inactive model rejected,
+out-of-bounds confidence rejected, `occurredAt` too far in the future/past
+rejected, two same-type detections within the dedup window aggregating
+into one row with the latest confidence); staff reads + RBAC
+(`SCHOOL_ADMIN`/`TRANSPORT_MANAGER` allowed and filterable,
+`DRIVER`/`BUS_ATTENDANT`/parent denied, cross-tenant observation read
+404); the AI model registry (`SUPER_ADMIN` full lifecycle including the
+terminal `DEPRECATED` state, duplicate `(name, version)` rejected, a
+school-level `SCHOOL_ADMIN` and a parent both denied); the
+Camera-to-edge-device association (valid same-bus assignment, a
+non-`EDGE_COMPUTER` device rejected, a different-bus device rejected, a
+different-school device rejected); `/realtime/ai-observations` Socket.IO
+authorization with a real `socket.io-client` (authorized staff receives
+`ai.observation.created`, a parent/no-token/`DRIVER` connection is
+rejected identically); and a direct-`psql`-as-`app_user` RLS
+re-verification for `ai_observations` (tenant-isolated) alongside
+`ai_models` (deliberately readable regardless of tenant context, since it
+carries no RLS policy at all — see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)).
 
 **Covered as of Phase 2 Step 13** (`apps/api/src/geofencing/geo.util.spec.ts`,
 11 unit tests, plus `apps/api/test/geofencing.e2e-spec.ts`, 21 e2e tests):
@@ -852,6 +942,23 @@ re-verification described above.
   block other rules nor fail the ingestion request itself — see
   [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)
   Decision 4.
+- A compromised edge-AI device flooding the platform with duplicate
+  detections, or forging observations for a camera it doesn't own (Phase 3
+  Step 14) → mitigated structurally: the dedup-window unique constraint
+  collapses repeated same-type detections into one row regardless of
+  volume; a device may only submit for a camera explicitly assigned to it
+  (`Camera.edgeDeviceId`), never merely "on the same bus"; and its
+  credential can only ever authenticate `EDGE_COMPUTER`-scoped requests,
+  never a staff/parent session or another device type's endpoint — see
+  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+  Decisions 3, 4, and 8.
+- An AI observation (even a high-confidence one) automatically escalating
+  into a safety event, emergency, or parent notification (Phase 3 Step 14)
+  → structurally impossible this step: no code path in
+  `AiObservationsService` calls into the `safety` or `notifications`
+  modules at all, and there is no review/promote endpoint yet — see
+  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+  Decision 7.
 
 ## 8. Rate Limiting
 

@@ -25,6 +25,7 @@ type CameraRow = {
   manufacturer: string | null;
   model: string | null;
   streamType: string;
+  edgeDeviceId: string | null;
   createdAt: Date;
   updatedAt: Date;
   busDevice: {
@@ -101,6 +102,24 @@ export class CamerasService {
       tx.bus.findFirst({ where: { id: busId, deletedAt: null } }),
     );
     if (!bus) throw new NotFoundException('No such bus.');
+  }
+
+  /**
+   * A camera may only be assigned to an EDGE_COMPUTER device on the SAME
+   * tenant AND the same bus (Phase 3 Step 14) — an edge box mounted on one
+   * bus cannot be assigned to process a camera physically on another bus.
+   * 404 (not 400) for a foreign/wrong-type/wrong-bus device — existence is
+   * never revealed, same convention as every other cross-tenant check in
+   * this codebase.
+   */
+  private async assertEdgeDeviceInTenant(schoolId: string, edgeDeviceId: string, busId: string): Promise<void> {
+    const device = await this.prisma.runInTenantContext(schoolId, (tx) =>
+      tx.busDevice.findFirst({
+        where: { id: edgeDeviceId, busId, deviceType: 'EDGE_COMPUTER', status: 'ACTIVE' },
+        select: { id: true },
+      }),
+    );
+    if (!device) throw new NotFoundException('No such edge device on this bus.');
   }
 
   async listForBus(principal: AuthenticatedPrincipal, busId: string): Promise<CameraDto[]> {
@@ -214,6 +233,9 @@ export class CamerasService {
     if (reassigning) {
       await this.assertBusInTenant(principal.schoolId, input.busId!);
     }
+    if (input.edgeDeviceId !== undefined && input.edgeDeviceId !== null) {
+      await this.assertEdgeDeviceInTenant(principal.schoolId, input.edgeDeviceId, input.busId ?? existing.busId);
+    }
 
     let camera;
     try {
@@ -239,6 +261,7 @@ export class CamerasService {
             streamType: input.streamType,
             status: input.status,
             busId: input.busId,
+            edgeDeviceId: input.edgeDeviceId,
           },
           include: { busDevice: true },
         });
@@ -364,6 +387,7 @@ export class CamerasService {
       connectivity: this.deriveConnectivity(camera.busDevice.lastSeenAt),
       lastSeenAt: camera.busDevice.lastSeenAt?.toISOString() ?? null,
       credentialSetAt: camera.busDevice.credentialSetAt?.toISOString() ?? null,
+      edgeDeviceId: camera.edgeDeviceId,
       createdAt: camera.createdAt.toISOString(),
       updatedAt: camera.updatedAt.toISOString(),
     };

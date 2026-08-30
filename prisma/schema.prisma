@@ -519,6 +519,7 @@ model School {
   emergencyActions       EmergencyAction[]
   geofences              Geofence[]
   safetyRules            SafetyRule[]
+  aiObservations         AIObservation[]
   drivers                Driver[]
   attendants             Attendant[]
   routes                 Route[]
@@ -728,14 +729,15 @@ model Bus {
   updatedAt          DateTime  @updatedAt @map("updated_at")
   deletedAt          DateTime? @map("deleted_at")
 
-  school       School        @relation(fields: [schoolId], references: [id])
-  devices      BusDevice[]
-  trips        Trip[]
-  gpsPoints    GpsPoint[]
-  cameras      Camera[]
-  safetyEvents SafetyEvent[]
-  emergencies  Emergency[]
-  safetyRules  SafetyRule[]
+  school         School          @relation(fields: [schoolId], references: [id])
+  devices        BusDevice[]
+  trips          Trip[]
+  gpsPoints      GpsPoint[]
+  cameras        Camera[]
+  safetyEvents   SafetyEvent[]
+  emergencies    Emergency[]
+  safetyRules    SafetyRule[]
+  aiObservations AIObservation[]
 
   @@unique([schoolId, registrationNumber])
   @@unique([schoolId, fleetNumber])
@@ -770,10 +772,17 @@ model BusDevice {
   createdAt        DateTime     @default(now()) @map("created_at")
   updatedAt        DateTime     @updatedAt @map("updated_at")
 
-  school    School     @relation(fields: [schoolId], references: [id])
-  bus       Bus        @relation(fields: [busId], references: [id])
-  gpsPoints GpsPoint[]
-  camera    Camera?
+  school           School          @relation(fields: [schoolId], references: [id])
+  bus              Bus             @relation(fields: [busId], references: [id])
+  gpsPoints        GpsPoint[]
+  camera           Camera?
+  // The reverse of Camera.edgeDeviceId below — the set of cameras this
+  // EDGE_COMPUTER device has been assigned to process (Phase 3 Step 14).
+  // Named distinctly from `camera` above (this BusDevice's own identity as
+  // a CAMERA_CONTROLLER, unrelated) — a device can be exactly one of those
+  // two roles, never both, enforced at the service layer, not the schema.
+  camerasProcessed Camera[]        @relation("CameraEdgeDevice")
+  aiObservations   AIObservation[]
 
   @@unique([deviceType, externalDeviceId])
   @@unique([credentialHash])
@@ -815,16 +824,27 @@ model Camera {
   manufacturer        String?
   model               String?
   streamType          CameraStreamType @default(NONE) @map("stream_type")
+  // The EDGE_COMPUTER BusDevice that processes this camera's feed locally
+  // (Phase 3 Step 14) — optional; null until staff explicitly assign one.
+  // An edge-AI device may only submit observations for a camera whose
+  // edgeDeviceId equals its own authenticated device id (see
+  // docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md), so this
+  // assignment is the sole gate on which device may report detections for
+  // which camera — never inferred from "same bus."
+  edgeDeviceId        String?          @map("edge_device_id")
   createdAt           DateTime         @default(now()) @map("created_at")
   updatedAt           DateTime         @updatedAt @map("updated_at")
 
-  school       School        @relation(fields: [schoolId], references: [id])
-  bus          Bus           @relation(fields: [busId], references: [id])
-  busDevice    BusDevice     @relation(fields: [busDeviceId], references: [id])
-  safetyEvents SafetyEvent[]
+  school         School          @relation(fields: [schoolId], references: [id])
+  bus            Bus             @relation(fields: [busId], references: [id])
+  busDevice      BusDevice       @relation(fields: [busDeviceId], references: [id])
+  edgeDevice     BusDevice?      @relation("CameraEdgeDevice", fields: [edgeDeviceId], references: [id])
+  safetyEvents   SafetyEvent[]
+  aiObservations AIObservation[]
 
   @@unique([schoolId, cameraCode])
   @@index([busId])
+  @@index([edgeDeviceId])
   @@map("cameras")
 }
 
@@ -1036,6 +1056,132 @@ model SafetyRule {
   @@map("safety_rules")
 }
 
+// ---------------------------------------------------------------------------
+// Edge AI / computer vision pipeline foundation (Phase 3 Step 14)
+// ---------------------------------------------------------------------------
+// See docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md. Inference
+// itself runs on an EDGE_COMPUTER device (a BusDevice, already reserved
+// since Phase 1) local to the bus — this schema stores only the small,
+// already-normalized RESULT an edge device reports (an "AI observation"),
+// never raw frames/video. An AIObservation is explicitly NOT a SafetyEvent:
+// promoting a reviewed observation into one is Step 15's job, not this
+// step's — see SafetyModule's own separation for the identical reasoning
+// applied to human-reported events (ADR 0019).
+
+// A specific, versioned model artifact. Platform-wide (no schoolId) — a
+// model is a shared ML asset used across schools, not a per-tenant
+// configuration; see the ADR for why this deliberately does NOT follow the
+// tenant-scoped pattern every other table in this schema uses. Registered/
+// activated/deactivated only by SUPER_ADMIN (platform.ai_models.manage).
+model AIModel {
+  id        String        @id @default(uuid())
+  name      String
+  // Immutable once observations reference it — "update" means registering a
+  // NEW version row, never mutating this one (see the ADR's "model version
+  // immutability" decision). Only `status` may change on an existing row.
+  version   String
+  provider  String
+  modelType AIModelType   @map("model_type")
+  status    AIModelStatus @default(ACTIVE)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  observations AIObservation[]
+
+  @@unique([name, version])
+  @@map("ai_models")
+}
+
+// A candidate detection reported by an authenticated edge device — the
+// terminal AI output for this step (see the ADR's "SafetyEvent boundary"
+// decision: this table is never automatically read by, or written into,
+// the safety module). `windowStart` backs the temporal-aggregation/dedup
+// unique constraint below — see AiObservationsService.
+model AIObservation {
+  id                String              @id @default(uuid())
+  schoolId          String              @map("school_id")
+  busId             String              @map("bus_id")
+  tripId            String?             @map("trip_id")
+  cameraId          String              @map("camera_id")
+  edgeDeviceId      String              @map("edge_device_id")
+  modelId           String              @map("model_id")
+  // Denormalized snapshot of AIModel.version at ingestion time — cheap
+  // display without a join, and resilient if the AIModel row's status ever
+  // changes after the fact (the observation's own historical record of
+  // which version produced it never moves).
+  modelVersion      String              @map("model_version")
+  detectionType     AIDetectionType     @map("detection_type")
+  // Model confidence in the detection itself — NOT a probability of harm,
+  // guilt, or any judgment about a person. See the ADR.
+  confidence        Float
+  occurredAt        DateTime            @map("occurred_at")
+  receivedAt        DateTime            @default(now()) @map("received_at")
+  windowStart       DateTime            @map("window_start")
+  status            AIObservationStatus @default(CANDIDATE)
+  // Null unless a real evidence-storage integration is configured — never
+  // fabricated. No such integration exists this step, so this is always
+  // null in practice (see the ADR's "raw video / evidence boundary").
+  evidenceReference String?             @map("evidence_reference")
+  metadata          Json?
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  school     School    @relation(fields: [schoolId], references: [id])
+  bus        Bus       @relation(fields: [busId], references: [id])
+  trip       Trip?     @relation(fields: [tripId], references: [id])
+  camera     Camera    @relation(fields: [cameraId], references: [id])
+  edgeDevice BusDevice @relation(fields: [edgeDeviceId], references: [id])
+  model      AIModel   @relation(fields: [modelId], references: [id])
+
+  // Idempotency/temporal-aggregation key — a repeated detection of the same
+  // type, from the same camera+edge device, within the same time window,
+  // updates this row (latest confidence/timestamp wins) instead of creating
+  // a new one. See the ADR's "AI observation deduplication" decision.
+  @@unique([edgeDeviceId, cameraId, detectionType, windowStart])
+  @@index([schoolId, occurredAt])
+  @@index([cameraId, occurredAt])
+  @@index([busId, occurredAt])
+  @@index([tripId, occurredAt])
+  @@index([detectionType, occurredAt])
+  @@index([status, occurredAt])
+  @@map("ai_observations")
+}
+
+enum AIModelType {
+  OBJECT_DETECTION
+  POSE_ESTIMATION
+  ACTION_RECOGNITION
+  SMOKE_FIRE_DETECTION
+}
+
+enum AIModelStatus {
+  ACTIVE
+  INACTIVE
+  DEPRECATED
+}
+
+// A controlled, objective, physical-event taxonomy — deliberately no
+// identity, emotion, or subjective/character classification exists here.
+// See the ADR's "detection taxonomy" decision.
+enum AIDetectionType {
+  PERSON_DETECTED
+  PERSON_COUNT
+  OBJECT_DETECTED
+  FALL_DETECTED
+  SMOKE_DETECTED
+  FIRE_DETECTED
+  DOOR_STATE_DETECTED
+  UNUSUAL_MOTION
+}
+
+// REVIEWED/DISMISSED/PROMOTED are reserved for Step 15's human-review
+// workflow — no code path in this step ever sets anything but CANDIDATE.
+enum AIObservationStatus {
+  CANDIDATE
+  REVIEWED
+  DISMISSED
+  PROMOTED
+}
+
 model Driver {
   id            String       @id @default(uuid())
   schoolId      String       @map("school_id")
@@ -1184,6 +1330,7 @@ model Trip {
   gpsPoints        GpsPoint[]
   safetyEvents     SafetyEvent[]
   emergencies      Emergency[]
+  aiObservations   AIObservation[]
 
   @@unique([routeId, serviceDate, shift])
   @@index([schoolId, serviceDate])

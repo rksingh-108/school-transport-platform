@@ -19,3 +19,5 @@ export * from './safety-events';
 export * from './emergencies';
 export * from './geofences';
 export * from './safety-rules';
+export * from './ai-models';
+export * from './ai-observations';

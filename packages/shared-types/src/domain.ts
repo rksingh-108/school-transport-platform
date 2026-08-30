@@ -188,6 +188,9 @@ export interface CameraDto {
   connectivity: 'ONLINE' | 'STALE' | 'OFFLINE' | 'UNKNOWN';
   lastSeenAt: string | null;
   credentialSetAt: string | null;
+  // The EDGE_COMPUTER BusDevice assigned to process this camera's feed
+  // (Phase 3 Step 14) — null until staff explicitly assign one via PATCH.
+  edgeDeviceId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -310,6 +313,51 @@ export interface SafetyRuleDto {
   updatedByName: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Platform-wide model registry entry (Phase 3 Step 14) — see docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md. */
+export interface AIModelDto {
+  id: string;
+  name: string;
+  version: string;
+  provider: string;
+  modelType: 'OBJECT_DETECTION' | 'POSE_ESTIMATION' | 'ACTION_RECOGNITION' | 'SMOKE_FIRE_DETECTION';
+  status: 'ACTIVE' | 'INACTIVE' | 'DEPRECATED';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A candidate detection reported by an authenticated edge device (Phase 3
+ * Step 14) — deliberately NOT a SafetyEvent; see the ADR. Never contains a
+ * `studentId`, face data, or any identity field. `confidence` is the
+ * model's confidence in the detection itself, not a probability of harm.
+ */
+export interface AIObservationDto {
+  id: string;
+  busId: string;
+  tripId: string | null;
+  cameraId: string;
+  edgeDeviceId: string;
+  modelId: string;
+  modelName: string;
+  modelVersion: string;
+  detectionType:
+    | 'PERSON_DETECTED'
+    | 'PERSON_COUNT'
+    | 'OBJECT_DETECTED'
+    | 'FALL_DETECTED'
+    | 'SMOKE_DETECTED'
+    | 'FIRE_DETECTED'
+    | 'DOOR_STATE_DETECTED'
+    | 'UNUSUAL_MOTION';
+  confidence: number;
+  occurredAt: string;
+  receivedAt: string;
+  status: 'CANDIDATE' | 'REVIEWED' | 'DISMISSED' | 'PROMOTED';
+  evidenceReference: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 export interface EmergencyDto {

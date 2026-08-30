@@ -66,6 +66,10 @@ export type ManagementAuditAction =
   | 'SAFETY_RULE_UPDATED'
   | 'SAFETY_RULE_ENABLED'
   | 'SAFETY_RULE_DISABLED'
+  | 'AI_MODEL_REGISTERED'
+  | 'AI_MODEL_ACTIVATED'
+  | 'AI_MODEL_DEACTIVATED'
+  | 'AI_MODEL_DEPRECATED'
   | 'ROUTE_CREATED'
   | 'ROUTE_UPDATED'
   | 'ROUTE_STATUS_CHANGED'
@@ -112,6 +116,43 @@ export class AuditService {
       tx.auditLog.create({
         data: {
           schoolId,
+          actorType: params.actorType,
+          actorId: params.actorId,
+          action: params.action,
+          subjectType: params.subjectType,
+          subjectId: params.subjectId,
+          requestId: params.requestId,
+          ipAddress: params.ipAddress,
+          metadata: params.metadata,
+        },
+      }),
+    );
+  }
+
+  /**
+   * For genuinely platform-wide actions with no target school at all (e.g.
+   * registering a model in the shared, platform-wide AI model registry —
+   * Phase 3 Step 14). `audit_logs.school_id` is nullable specifically for
+   * this case, readable only under `app.is_platform_admin` (see the
+   * `tenant_isolation` policy comment in the init migration). Do not use
+   * this for an action that DOES have a natural target school — `record()`
+   * with that school's id is correct there (see SchoolsService.updateStatus
+   * for the platform-managed-but-still-per-school precedent).
+   */
+  async recordPlatform(params: {
+    actorType: ActorType;
+    actorId?: string;
+    action: ManagementAuditAction;
+    subjectType?: string;
+    subjectId?: string;
+    requestId?: string;
+    ipAddress?: string;
+    metadata?: Prisma.InputJsonValue;
+  }): Promise<void> {
+    await this.prisma.runAsPlatformAdmin((tx) =>
+      tx.auditLog.create({
+        data: {
+          schoolId: null,
           actorType: params.actorType,
           actorId: params.actorId,
           action: params.action,
