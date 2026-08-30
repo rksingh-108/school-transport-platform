@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/drivers', label: 'Drivers', permission: 'drivers.read' },
   { href: '/dashboard/attendants', label: 'Attendants', permission: 'attendants.read' },
   { href: '/dashboard/routes', label: 'Routes', permission: 'routes.read' },
+  { href: '/dashboard/trips', label: 'Trips', permission: 'trips.read' },
 ] as const;
 
 function DashboardShell({ children }: { children: React.ReactNode }) {

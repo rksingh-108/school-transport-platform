@@ -188,7 +188,16 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'reports.read',
     'audit_logs.read',
   ],
-  DRIVER: ['trips.read', 'trips.manage', 'gps.read', 'emergency.create'],
+  // `trips.manage` deliberately excluded — a driver must never manage ANY
+  // trip (create/reassign/cancel any trip in the school), only start/complete
+  // their OWN assigned one. That narrower capability is enforced by
+  // TripsService checking "is this principal the trip's assigned driver" in
+  // addition to the `trips.read` permission gate, not by a broader
+  // permission grant — see docs/security.md's trips authorization note.
+  // (Phase 0's seed granted `trips.manage` here; removed in Phase 1 Step 5
+  // while reviewing existing grants, the same kind of gap found and fixed
+  // for TRANSPORT_MANAGER in Phase 1 Step 3.)
+  DRIVER: ['trips.read', 'gps.read', 'emergency.create'],
   BUS_ATTENDANT: ['trips.read', 'attendance.manage', 'gps.read', 'emergency.create'],
   SECURITY: [
     'gps.read',

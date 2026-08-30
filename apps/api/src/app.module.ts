@@ -20,6 +20,7 @@ import { AttendantsModule } from './attendants/attendants.module';
 import { BusDevicesModule } from './bus-devices/bus-devices.module';
 import { RoutesModule } from './routes/routes.module';
 import { RouteStopsModule } from './route-stops/route-stops.module';
+import { TripsModule } from './trips/trips.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -47,6 +48,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     BusDevicesModule,
     RoutesModule,
     RouteStopsModule,
+    TripsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

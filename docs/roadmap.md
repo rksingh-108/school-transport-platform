@@ -59,7 +59,15 @@ surface):
    shift inside one transaction) to respect the DB-enforced
    `unique(routeId, sequenceNo)` constraint without ever colliding
    mid-write.
-8. **Trips, Trip-Students**. Tests: driver/attendant scoped to own trip only.
+8. **Trips, Trip-Students**. **Done** — `TripsModule` (trip lifecycle +
+   read-only `trip_stops`) and `TripStudentsController` (manifest). See
+   [ADR 0012](adr/0012-trip-stop-snapshot-and-lifecycle.md) for the
+   lifecycle graph, the `trip_stops` immutable-snapshot design, wall-clock
+   scheduled times, and the driver-own-trip authorization mechanism.
+   Backend conflict detection prevents double-booking a bus/driver/attendant
+   into overlapping trips on the same service date. Tests: driver/attendant
+   scoped to own trip only — confirmed both in e2e tests and live against
+   the running server.
 9. **Attendance** (event-sourced state machine). Tests: full status-transition
    matrix, correction events preserve history.
 10. **GPS ingestion (HTTP, MVP) + live tracking module** + `/ws/tracking`. Tests:

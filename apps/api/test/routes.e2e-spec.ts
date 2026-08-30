@@ -333,7 +333,7 @@ describe('Routes and stops (e2e)', () => {
       expect(res.status).toBe(400);
     });
 
-    it('deletes a stop with no historical trip references', async () => {
+    it('deletes a stop', async () => {
       const token = await loginAs(adminA.email);
       const res = await api().delete(`/api/v1/stops/${stopIds[0]}`).set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);

@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Button } from './button';
 
 interface ConfirmDialogProps {
@@ -11,6 +12,8 @@ interface ConfirmDialogProps {
   loading?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Extra content between the description and the button row — e.g. a required-reason input. */
+  children?: ReactNode;
 }
 
 /** A real modal — never `window.confirm()`, which can't be styled, tested, or made accessible consistently. */
@@ -23,6 +26,7 @@ export function ConfirmDialog({
   loading,
   onConfirm,
   onCancel,
+  children,
 }: ConfirmDialogProps) {
   if (!open) return null;
 
@@ -38,6 +42,7 @@ export function ConfirmDialog({
           {title}
         </h2>
         {description && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{description}</p>}
+        {children && <div className="mt-3">{children}</div>}
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onCancel} disabled={loading}>
             Cancel

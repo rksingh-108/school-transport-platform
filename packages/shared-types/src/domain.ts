@@ -159,3 +159,69 @@ export interface RouteStopDto {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * One scheduled/actual execution of a Route — never the Route itself. See
+ * docs/adr/0012-trip-stop-snapshot-and-lifecycle.md. `scheduledStartTime`/
+ * `scheduledEndTime` are "HH:mm" school-local wall-clock strings, not
+ * instants — see the ADR for why. Denormalizes a few display fields
+ * (route/bus/driver/attendant names) so the list screen needs no N+1 calls.
+ */
+export interface TripDto {
+  id: string;
+  routeId: string;
+  routeName: string;
+  routeCode: string | null;
+  direction: 'HOME_TO_SCHOOL' | 'SCHOOL_TO_HOME';
+  busId: string;
+  busRegistrationNumber: string;
+  busFleetNumber: string | null;
+  driverId: string;
+  driverName: string;
+  attendantId: string | null;
+  attendantName: string | null;
+  serviceDate: string;
+  shift: 'MORNING_PICKUP' | 'AFTERNOON_DROP' | 'CUSTOM';
+  scheduledStartTime: string;
+  scheduledEndTime: string;
+  status: 'SCHEDULED' | 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
+  startedAt: string | null;
+  endedAt: string | null;
+  cancellationReason: string | null;
+  notes: string | null;
+  studentCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Immutable snapshot of a route stop, taken at Trip creation — never edited afterward. */
+export interface TripStopDto {
+  id: string;
+  tripId: string;
+  sourceRouteStopId: string | null;
+  sequenceNo: number;
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  expectedOffsetMinutes: number;
+  mode: 'PICKUP' | 'DROPOFF' | 'BOTH';
+  createdAt: string;
+}
+
+/** Manifest membership — never inherited from the route, always an explicit row. */
+export interface TripStudentDto {
+  id: string;
+  tripId: string;
+  studentId: string;
+  studentFullName: string;
+  studentAdmissionNumber: string;
+  pickupTripStopId: string | null;
+  pickupStopName: string | null;
+  dropoffTripStopId: string | null;
+  dropoffStopName: string | null;
+  membershipStatus: 'PLANNED' | 'ACTIVE' | 'REMOVED';
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}

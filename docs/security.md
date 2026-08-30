@@ -313,6 +313,39 @@ parent-facing "where is my child's bus on their route today" view, which
 will be a separate, narrowly-scoped parent endpoint once Trips exist, never
 this management API.
 
+### 5.4 Trip Authorization
+
+Trip and manifest management (Phase 1 Step 5) reuse `trips.read`/
+`trips.manage` — no `trips.students.*` permission was introduced, same
+reasoning as §5.2/§5.3: a manifest entry has no lifecycle independent of
+its trip. Two things go beyond a flat permission check, both enforced in
+`TripsService`, not the route guard:
+
+- **Own-trip scoping for read access.** `DRIVER`/`BUS_ATTENDANT` hold
+  `trips.read` but never `trips.manage` (see below), so every
+  `GET /trips`/`GET /trips/:id` they make is scoped to only trips where
+  they are the assigned driver/attendant — resolved by looking up their own
+  `Driver`/`Attendant` profile, never a client-supplied filter. A trip that
+  exists but isn't theirs returns `404`, matching the codebase's general
+  "authorization boundary looks like resource-not-found" convention.
+- **Driver-only start/complete.** `POST /trips/:id/start` and `/complete`
+  are gated at the route level by the weaker `trips.read` (so a `DRIVER`
+  can reach them at all), and `TripsService` then checks "`trips.manage`
+  OR the caller is this specific trip's assigned driver" before proceeding
+  — the same pattern already used for `UsersService`'s "you cannot suspend
+  your own account" check (a permission grant plus an identity check the
+  permission system alone can't express). `BUS_ATTENDANT` never passes
+  this check for a trip that isn't theirs to drive, since attendants don't
+  start/end trips.
+
+Phase 0's seed had granted `DRIVER` a blanket `trips.manage`, which — if
+left in place — would have let any driver create, reassign, or cancel
+*every* trip in the school, not just start/complete their own. This was
+removed while reviewing existing grants for this phase (§2.3's matrix
+already documented the narrower "own trip start/end" intent for `DRIVER`;
+the seed data had simply drifted from it) — the same kind of gap found and
+fixed for `TRANSPORT_MANAGER`'s fleet visibility in Phase 1 Step 3.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to

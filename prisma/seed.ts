@@ -22,6 +22,67 @@ const prisma = new PrismaClient();
 
 const DEV_PASSWORD = 'Passw0rd!123'; // dev-only login for every seeded account
 
+/** YYYY-MM-DD, `offsetDays` from today — relative so seeded trips always look current, whenever the seed actually runs. */
+function relativeDate(offsetDays: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Seed data bypasses the API/TripsService entirely (same as every other
+ * seed entity), so it must replicate TripsService's TripStop-snapshot step
+ * by hand — copying the route's current active stops into the trip at
+ * creation, exactly like the real create() flow does. See
+ * docs/adr/0012-trip-stop-snapshot-and-lifecycle.md.
+ */
+async function createSeedTrip(params: {
+  schoolId: string;
+  routeId: string;
+  busId: string;
+  driverId: string;
+  attendantId?: string;
+  serviceDate: string;
+  shift: 'MORNING_PICKUP' | 'AFTERNOON_DROP' | 'CUSTOM';
+  scheduledStartTime: string;
+  scheduledEndTime: string;
+  status?: 'SCHEDULED' | 'READY' | 'IN_PROGRESS' | 'COMPLETED';
+  startedAt?: Date;
+  endedAt?: Date;
+}) {
+  const stops = await prisma.routeStop.findMany({ where: { routeId: params.routeId, status: 'ACTIVE' }, orderBy: { sequenceNo: 'asc' } });
+  return prisma.trip.create({
+    data: {
+      schoolId: params.schoolId,
+      routeId: params.routeId,
+      busId: params.busId,
+      driverId: params.driverId,
+      attendantId: params.attendantId,
+      serviceDate: new Date(params.serviceDate),
+      shift: params.shift,
+      scheduledStartTime: params.scheduledStartTime,
+      scheduledEndTime: params.scheduledEndTime,
+      status: params.status ?? 'SCHEDULED',
+      startedAt: params.startedAt,
+      endedAt: params.endedAt,
+      tripStops: {
+        create: stops.map((s) => ({
+          schoolId: params.schoolId,
+          sourceRouteStopId: s.id,
+          sequenceNo: s.sequenceNo,
+          name: s.name,
+          address: s.address,
+          latitude: s.latitude,
+          longitude: s.longitude,
+          expectedOffsetMinutes: s.expectedOffsetMinutes,
+          mode: s.mode,
+        })),
+      },
+    },
+    include: { tripStops: true },
+  });
+}
+
 function describePermission(key: PermissionKey): { category: string; description: string } {
   const segments = key.split('.');
   const action = segments.at(-1)!.replace(/_/g, ' ');
@@ -143,7 +204,7 @@ async function seedDemoSchool() {
     update: {},
     create: { schoolId: school.id, userId: driverUser.id, licenseNumber: 'KA-DEV-000111' },
   });
-  await prisma.driver.upsert({
+  const driver2 = await prisma.driver.upsert({
     where: { userId: driverUser2.id },
     update: {},
     create: { schoolId: school.id, userId: driverUser2.id, licenseNumber: 'KA-DEV-000112' },
@@ -154,7 +215,7 @@ async function seedDemoSchool() {
     update: {},
     create: { schoolId: school.id, userId: attendantUser.id },
   });
-  await prisma.attendant.upsert({
+  const attendant2 = await prisma.attendant.upsert({
     where: { userId: attendantUser2.id },
     update: {},
     create: { schoolId: school.id, userId: attendantUser2.id },
@@ -339,6 +400,18 @@ async function seedDemoSchool() {
     },
   });
 
+  const student2 = await prisma.student.upsert({
+    where: { schoolId_admissionNumber: { schoolId: school.id, admissionNumber: 'DEV-0002' } },
+    update: {},
+    create: {
+      schoolId: school.id,
+      admissionNumber: 'DEV-0002',
+      fullName: 'Kavya Nair (Dev)',
+      grade: '4',
+      section: 'B',
+    },
+  });
+
   const parent = await prisma.parent.upsert({
     where: { schoolId_phone: { schoolId: school.id, phone: '+91 90000 00001' } },
     update: {},
@@ -367,6 +440,82 @@ async function seedDemoSchool() {
       verifiedBy: schoolAdmin.id,
       verifiedAt: new Date(),
     },
+  });
+
+  // Trips — see docs/adr/0012-trip-stop-snapshot-and-lifecycle.md for what
+  // each field/status means. Realistic fake data across today/yesterday so
+  // the dashboard and cross-tenant security tests both have something to
+  // exercise regardless of when the seed actually runs.
+  const morningTripToday = await createSeedTrip({
+    schoolId: school.id,
+    routeId: route.id,
+    busId: bus.id,
+    driverId: driver.id,
+    attendantId: attendant.id,
+    serviceDate: relativeDate(0),
+    shift: 'MORNING_PICKUP',
+    scheduledStartTime: '07:00',
+    scheduledEndTime: '08:00',
+    status: 'SCHEDULED',
+  });
+  await prisma.tripStudent.createMany({
+    data: [
+      {
+        schoolId: school.id,
+        tripId: morningTripToday.id,
+        studentId: student.id,
+        pickupTripStopId: morningTripToday.tripStops[0]?.id,
+        dropoffTripStopId: null,
+      },
+      {
+        schoolId: school.id,
+        tripId: morningTripToday.id,
+        studentId: student2.id,
+        pickupTripStopId: morningTripToday.tripStops[1]?.id ?? morningTripToday.tripStops[0]?.id,
+        dropoffTripStopId: null,
+      },
+    ],
+    skipDuplicates: true,
+  });
+
+  const afternoonTripToday = await createSeedTrip({
+    schoolId: school.id,
+    routeId: afternoonRoute.id,
+    busId: bus2.id,
+    driverId: driver2.id,
+    attendantId: attendant2.id,
+    serviceDate: relativeDate(0),
+    shift: 'AFTERNOON_DROP',
+    scheduledStartTime: '14:30',
+    scheduledEndTime: '15:30',
+    status: 'READY',
+  });
+  await prisma.tripStudent.createMany({
+    data: [
+      {
+        schoolId: school.id,
+        tripId: afternoonTripToday.id,
+        studentId: student.id,
+        pickupTripStopId: null,
+        dropoffTripStopId: afternoonTripToday.tripStops[0]?.id,
+      },
+    ],
+    skipDuplicates: true,
+  });
+
+  await createSeedTrip({
+    schoolId: school.id,
+    routeId: route.id,
+    busId: bus.id,
+    driverId: driver.id,
+    attendantId: attendant.id,
+    serviceDate: relativeDate(-1),
+    shift: 'MORNING_PICKUP',
+    scheduledStartTime: '07:00',
+    scheduledEndTime: '08:00',
+    status: 'COMPLETED',
+    startedAt: new Date(`${relativeDate(-1)}T07:02:00Z`),
+    endedAt: new Date(`${relativeDate(-1)}T08:05:00Z`),
   });
 
   return { school, bus, route, driver, attendant, student, parent };
@@ -415,12 +564,12 @@ async function seedSchoolB() {
   const driverUserB = await makeStaffUser('driver@demo-school-b.example', 'Anil Kumar (Driver, Dev, School B)', 'DRIVER');
   const attendantUserB = await makeStaffUser('attendant@demo-school-b.example', 'Kavya Reddy (Attendant, Dev, School B)', 'BUS_ATTENDANT');
 
-  await prisma.driver.upsert({
+  const driverB = await prisma.driver.upsert({
     where: { userId: driverUserB.id },
     update: {},
     create: { schoolId: school.id, userId: driverUserB.id, licenseNumber: 'MH-DEV-000211' },
   });
-  await prisma.attendant.upsert({
+  const attendantB = await prisma.attendant.upsert({
     where: { userId: attendantUserB.id },
     update: {},
     create: { schoolId: school.id, userId: attendantUserB.id },
@@ -541,6 +690,31 @@ async function seedSchoolB() {
       verifiedBy: admin.id,
       verifiedAt: new Date(),
     },
+  });
+
+  const morningTripB = await createSeedTrip({
+    schoolId: school.id,
+    routeId: routeB.id,
+    busId: busB1.id,
+    driverId: driverB.id,
+    attendantId: attendantB.id,
+    serviceDate: relativeDate(0),
+    shift: 'MORNING_PICKUP',
+    scheduledStartTime: '07:15',
+    scheduledEndTime: '08:10',
+    status: 'SCHEDULED',
+  });
+  await prisma.tripStudent.createMany({
+    data: [
+      {
+        schoolId: school.id,
+        tripId: morningTripB.id,
+        studentId: studentB1.id,
+        pickupTripStopId: morningTripB.tripStops[0]?.id,
+        dropoffTripStopId: null,
+      },
+    ],
+    skipDuplicates: true,
   });
 
   return { school, students: [studentA1, studentB1], parent, admin };

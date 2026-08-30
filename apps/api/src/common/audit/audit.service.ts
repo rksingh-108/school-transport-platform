@@ -52,7 +52,17 @@ export type ManagementAuditAction =
   | 'STOP_UPDATED'
   | 'STOP_REORDERED'
   | 'STOP_DEACTIVATED'
-  | 'STOP_DELETED';
+  | 'STOP_DELETED'
+  | 'TRIP_CREATED'
+  | 'TRIP_UPDATED'
+  | 'TRIP_READY'
+  | 'TRIP_STARTED'
+  | 'TRIP_COMPLETED'
+  | 'TRIP_CANCELLED'
+  | 'TRIP_NO_SHOW'
+  | 'TRIP_STUDENT_ADDED'
+  | 'TRIP_STUDENT_UPDATED'
+  | 'TRIP_STUDENT_REMOVED';
 
 @Injectable()
 export class AuditService {

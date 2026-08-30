@@ -167,13 +167,37 @@ enum RouteStopStatus {
   INACTIVE
 }
 
+// SCHEDULED: created with a full bus/driver/attendant assignment, not yet
+//   confirmed ready. Reversible to CANCELLED/NO_SHOW.
+// READY: staff has explicitly re-confirmed the route/bus/driver/attendant
+//   are still operational right now (re-checked at this transition, not
+//   just at creation) — the mandatory checkpoint before a trip can start.
+// IN_PROGRESS: started (`POST /trips/:id/start`) — `startedAt` set.
+// COMPLETED: ended (`POST /trips/:id/complete`) — `endedAt` set. Terminal.
+// CANCELLED: called off before or during execution, with a required reason
+//   (`cancellationReason`). Terminal. Never a physical delete — see
+//   docs/database.md's Trip section.
+// NO_SHOW: reached its scheduled time without ever starting (crew/bus
+//   failed to show), distinct from CANCELLED (a decided-in-advance
+//   non-run) — only reachable from SCHEDULED/READY, never once IN_PROGRESS.
+//   Terminal, reason required (reuses `cancellationReason`).
+// See docs/adr/0012-trip-stop-snapshot-and-lifecycle.md for the full
+// transition graph.
 enum TripStatus {
   SCHEDULED
+  READY
   IN_PROGRESS
   COMPLETED
   CANCELLED
+  NO_SHOW
 }
 
+// This is Step 6 Attendance's field, not read or written by anything in
+// Phase 1 Step 5 — kept from the Phase 0 scaffold for the future attendance
+// module to use, deliberately untouched here. See TripStudent.membershipStatus
+// for the Step 5 concept ("is this student even supposed to be on this
+// trip"), which is a different question from this one ("what happened to
+// them during it").
 enum TripStudentStatus {
   EXPECTED
   BOARDING_PENDING
@@ -181,6 +205,18 @@ enum TripStudentStatus {
   ABSENT
   DROPPED_OFF
   ARRIVED_AT_SCHOOL
+}
+
+// Manifest membership — Step 5's concept, distinct from TripStudentStatus
+// (Step 6 attendance) above. PLANNED: added to the manifest, trip not yet
+// started. ACTIVE: the trip has started (`POST /trips/:id/start` bulk-
+// promotes every PLANNED entry) — this is the confirmed roster for the run
+// actually happening. REMOVED: soft-removed from the manifest (never hard-
+// deleted, for audit) — excluded from the default manifest view.
+enum MembershipStatus {
+  PLANNED
+  ACTIVE
+  REMOVED
 }
 
 enum AttendanceEventType {
@@ -273,6 +309,7 @@ model School {
   routes              Route[]
   routeStops          RouteStop[]
   trips               Trip[]
+  tripStops           TripStop[]
   tripStudents        TripStudent[]
   attendanceEvents    AttendanceEvent[]
   gpsPoints           GpsPoint[]
@@ -601,9 +638,9 @@ model RouteStop {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
-  school       School        @relation(fields: [schoolId], references: [id])
-  route        Route         @relation(fields: [routeId], references: [id], onDelete: Cascade)
-  tripStudents TripStudent[]
+  school    School     @relation(fields: [schoolId], references: [id])
+  route     Route      @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  tripStops TripStop[]
 
   @@unique([routeId, sequenceNo])
   @@map("route_stops")
@@ -613,48 +650,113 @@ model RouteStop {
 // Trips / Attendance
 // ---------------------------------------------------------------------------
 
+// A Trip is one scheduled/actual EXECUTION of a Route — never the Route
+// itself. `busId`/`driverId` are required (a trip is only ever created with
+// both already assigned; there is no lesser "draft" trip without them in
+// this design — see the ADR); `attendantId` stays optional, matching real
+// operations where not every run carries one. `scheduledStartTime`/
+// `scheduledEndTime` are validated "HH:mm" wall-clock strings, deliberately
+// NOT a DateTime/timestamptz — see the ADR for why storing them as an
+// already-converted UTC instant would risk exactly the timezone bug this
+// phase was told to avoid. `startedAt`/`endedAt` ARE real `DateTime`
+// instants, because they record a single moment that actually happened,
+// which is unambiguous in UTC. `cancellationReason` is used for both
+// CANCELLED and NO_SHOW (the same "why didn't this run as planned" fact).
 model Trip {
-  id          String     @id @default(uuid())
-  schoolId    String     @map("school_id")
-  routeId     String     @map("route_id")
-  busId       String     @map("bus_id")
-  driverId    String     @map("driver_id")
-  attendantId String?    @map("attendant_id")
-  serviceDate DateTime   @map("service_date") @db.Date
-  shift       Shift
-  status      TripStatus @default(SCHEDULED)
-  startedAt   DateTime?  @map("started_at")
-  endedAt     DateTime?  @map("ended_at")
-  createdAt   DateTime   @default(now()) @map("created_at")
-  updatedAt   DateTime   @updatedAt @map("updated_at")
+  id                 String     @id @default(uuid())
+  schoolId           String     @map("school_id")
+  routeId            String     @map("route_id")
+  busId              String     @map("bus_id")
+  driverId           String     @map("driver_id")
+  attendantId        String?    @map("attendant_id")
+  serviceDate        DateTime   @map("service_date") @db.Date
+  shift              Shift
+  scheduledStartTime String     @map("scheduled_start_time")
+  scheduledEndTime   String     @map("scheduled_end_time")
+  status             TripStatus @default(SCHEDULED)
+  startedAt          DateTime?  @map("started_at")
+  endedAt            DateTime?  @map("ended_at")
+  cancellationReason String?    @map("cancellation_reason")
+  notes              String?
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
 
   school       School        @relation(fields: [schoolId], references: [id])
   route        Route         @relation(fields: [routeId], references: [id])
   bus          Bus           @relation(fields: [busId], references: [id])
   driver       Driver        @relation(fields: [driverId], references: [id])
   attendant    Attendant?    @relation(fields: [attendantId], references: [id])
+  tripStops    TripStop[]
   tripStudents TripStudent[]
   gpsPoints    GpsPoint[]
 
   @@unique([routeId, serviceDate, shift])
   @@index([schoolId, serviceDate])
   @@index([busId, serviceDate])
+  @@index([driverId, serviceDate])
+  @@index([attendantId, serviceDate])
   @@map("trips")
 }
 
+// An immutable snapshot of the route's active stops at the moment the Trip
+// was created — never edited afterward. Exists specifically so a later edit
+// to the live Route/RouteStop can never silently change what an existing
+// Trip's plan was. `sourceRouteStopId` is kept only for traceability
+// ("which live stop did this come from") and goes null if that RouteStop is
+// ever deleted — the snapshot itself is unaffected either way. See
+// docs/adr/0012-trip-stop-snapshot-and-lifecycle.md.
+model TripStop {
+  id                    String    @id @default(uuid())
+  schoolId              String    @map("school_id")
+  tripId                String    @map("trip_id")
+  sourceRouteStopId     String?   @map("source_route_stop_id")
+  sequenceNo            Int       @map("sequence_no")
+  name                  String
+  address               String?
+  latitude              Float
+  longitude             Float
+  expectedOffsetMinutes Int       @map("expected_offset_minutes")
+  mode                  StopMode
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  school           School            @relation(fields: [schoolId], references: [id])
+  trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  sourceRouteStop  RouteStop?        @relation(fields: [sourceRouteStopId], references: [id], onDelete: SetNull)
+  pickupStudents   TripStudent[]     @relation("TripStudentPickup")
+  dropoffStudents  TripStudent[]     @relation("TripStudentDropoff")
+
+  @@unique([tripId, sequenceNo])
+  @@index([schoolId])
+  @@map("trip_stops")
+}
+
+// Explicit trip <-> student membership — a student never inherits a trip
+// merely by belonging to its route. `pickupTripStopId`/`dropoffTripStopId`
+// reference this Trip's OWN `TripStop` rows (never a live `RouteStop`, and
+// never another trip's stop — enforced in the service layer since a bare FK
+// can't express "must belong to this specific trip"); either may be null,
+// meaning "the school itself" (the route's implicit terminus, which isn't
+// modeled as a stop) — see docs/api.md's trips section. `membershipStatus`
+// is the Step 5 concept ("is this student on the manifest"), never
+// `currentStatus` above (Step 6 attendance's concept).
 model TripStudent {
-  id            String            @id @default(uuid())
-  schoolId      String            @map("school_id")
-  tripId        String            @map("trip_id")
-  studentId     String            @map("student_id")
-  stopId        String?           @map("stop_id")
-  currentStatus TripStudentStatus @default(EXPECTED) @map("current_status")
-  updatedAt     DateTime          @updatedAt @map("updated_at")
+  id                String            @id @default(uuid())
+  schoolId          String            @map("school_id")
+  tripId            String            @map("trip_id")
+  studentId         String            @map("student_id")
+  pickupTripStopId  String?           @map("pickup_trip_stop_id")
+  dropoffTripStopId String?           @map("dropoff_trip_stop_id")
+  membershipStatus  MembershipStatus  @default(PLANNED) @map("membership_status")
+  notes             String?
+  currentStatus     TripStudentStatus @default(EXPECTED) @map("current_status")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
 
   school           School            @relation(fields: [schoolId], references: [id])
   trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
   student          Student           @relation(fields: [studentId], references: [id])
-  stop             RouteStop?        @relation(fields: [stopId], references: [id])
+  pickupTripStop   TripStop?         @relation("TripStudentPickup", fields: [pickupTripStopId], references: [id], onDelete: SetNull)
+  dropoffTripStop  TripStop?         @relation("TripStudentDropoff", fields: [dropoffTripStopId], references: [id], onDelete: SetNull)
   attendanceEvents AttendanceEvent[]
 
   @@unique([tripId, studentId])

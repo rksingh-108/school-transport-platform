@@ -89,7 +89,7 @@ school-transport-platform/
 │   │   │   │   ├── attendants/
 │   │   │   │   ├── routes/
 │   │   │   │   ├── route-stops/         # named to match bus-devices' convention: sub-resource module named after the owning relationship
-│   │   │   │   ├── trips/
+│   │   │   │   ├── trips/               # one NestJS module — TripsController (+ read-only trip-stops) and TripStudentsController (manifest) share it rather than each getting a separate module, since both are tightly coupled to Trip and neither needs independent app-level wiring
 │   │   │   │   ├── attendance/
 │   │   │   │   ├── gps/                 # telemetry ingestion + live state
 │   │   │   │   ├── geofencing/          # phase 2
@@ -196,7 +196,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `invitations` | onboarding token lifecycle (staff + parent, polymorphic) | password/credential storage (still owned by `users`/`parents`) |
 | `buses` / `bus-devices` | vehicle + device inventory | live telemetry (owned by `gps`) |
 | `routes` / `route-stops` | static route topology | trip execution state |
-| `trips` / `trip-students` | a route's execution instance + per-student manifest | attendance event history (owned by `attendance`) |
+| `trips` / `trip-stops` / `trip-students` | a route's execution instance, its immutable stop snapshot, and the per-student manifest | attendance event history (owned by `attendance`) |
 | `attendance` | append-only boarding/drop-off events + derived current status | trip scheduling |
 | `gps` | live + historical device telemetry | camera data |
 | `cameras` | device inventory + health | recordings (owned by `files`) |
@@ -222,8 +222,11 @@ session but with **separate layouts and separately reviewed data-fetching paths*
   as of Phase 1 Step 2: a single `/parent` profile + linked-children page — no
   camera/AI/incident/other-student surface exists in this route group at all.
 - `(driver)` / `(attendant)` — mobile-first, minimal-chrome views for in-motion use.
-  Not built yet (no driver/attendant-facing feature exists before the trips/
-  attendance phase).
+  Not built yet. A driver's own start/complete actions on their assigned trip are
+  functional as of Phase 1 Step 5 (own-trip-scoped, enforced server-side — see
+  docs/security.md §5.4), but only through the same `(school)` admin dashboard
+  shell everyone else uses; a dedicated in-motion mobile view is still deferred,
+  most usefully built alongside the attendance/boarding phase it's really for.
 - Login (`/login/staff`, `/login/parent`) and `/accept-invitation` are top-level
   routes outside any audience group, since they run before a session exists.
   Session state is a React Context (`AuthProvider`) backed by an in-memory access

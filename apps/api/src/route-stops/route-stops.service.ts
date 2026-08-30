@@ -185,17 +185,21 @@ export class RouteStopsService {
     return stops.map((s) => this.toDto(s));
   }
 
-  /** Hard-deletes only if nothing historical references this stop yet; otherwise the caller must deactivate it instead (docs/database.md). */
+  /**
+   * Always a hard delete — safe regardless of trip history since Phase 1
+   * Step 5: a Trip never references a live `RouteStop` directly, only its
+   * own immutable `TripStop` snapshot (copied at trip creation). Deleting a
+   * `RouteStop` that a `TripStop` was snapshotted from just clears that
+   * `TripStop`'s traceability pointer (`sourceRouteStopId` -> null via
+   * `onDelete: SetNull`) — the snapshot's own data is untouched, so no
+   * historical trip plan is ever affected. (Before Step 5, `TripStudent`
+   * referenced `RouteStop` directly, which is why this method used to check
+   * for and block on historical trip references — that check is now
+   * obsolete. See docs/adr/0012-trip-stop-snapshot-and-lifecycle.md.)
+   */
   async remove(principal: AuthenticatedPrincipal, id: string, meta: RequestMeta): Promise<void> {
     const existing = await this.prisma.runInTenantContext(principal.schoolId, (tx) => tx.routeStop.findFirst({ where: { id } }));
     if (!existing) throw new NotFoundException();
-
-    const referenced = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
-      tx.tripStudent.findFirst({ where: { stopId: id } }),
-    );
-    if (referenced) {
-      throw new BadRequestException('This stop has historical trip records and cannot be deleted — deactivate it instead.');
-    }
 
     await this.prisma.runInTenantContext(principal.schoolId, (tx) => tx.routeStop.delete({ where: { id } }));
 

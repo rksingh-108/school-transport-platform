@@ -206,14 +206,32 @@ Stop endpoints are gated by `routes.read`/`routes.manage`, not a separate
 independent of its route.
 
 ### Trips
-| Method | Path | Permission |
-|---|---|---|
-| GET | `/trips` | `trips.read` (filtered to assigned trip for DRIVER/ATTENDANT) |
-| POST | `/trips` | `trips.manage` (create/schedule) |
-| GET | `/trips/:id` | `trips.read` |
-| POST | `/trips/:id/start` | `trips.manage` (DRIVER: own trip only) |
-| POST | `/trips/:id/end` | `trips.manage` (DRIVER: own trip only) |
-| GET | `/trips/:id/manifest` | `attendance.read` |
+
+Implemented in Phase 1 Step 5 — `apps/api/src/trips/` (`TripsController`,
+`TripStudentsController`). A Trip is one scheduled/actual execution of a
+Route — see [database.md](database.md#trips-trip_stops-trip_students) and
+[ADR 0012](adr/0012-trip-stop-snapshot-and-lifecycle.md) for the full
+lifecycle, the `trip_stops` immutable-snapshot strategy, and why scheduled
+times are `"HH:mm"` strings rather than `DateTime`. No `schoolId` field
+exists on any create/update DTO. `routeId` is fixed at creation (a
+different route is a different trip, not an edit of this one).
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/trips` | `trips.read` | Cursor-paginated; `?serviceDate`, `?routeId`, `?status`, `?busId`, `?driverId`. `DRIVER`/`BUS_ATTENDANT` (who hold `trips.read` but never `trips.manage`) see only trips where they are the assigned driver/attendant — resolved from their own `Driver`/`Attendant` profile, not a client-supplied filter. |
+| GET | `/trips/:id` | `trips.read` | Same own-trip scoping as the list; 404 (not 403) if the trip exists but isn't theirs. |
+| GET | `/trips/:id/stops` | `trips.read` | The immutable snapshot taken at creation — never the route's current stops. |
+| POST | `/trips` | `trips.manage` | `{routeId, busId, driverId, attendantId?, serviceDate, scheduledStartTime, scheduledEndTime, notes?}`. Validates the route is `ACTIVE` with ≥1 active stop, the bus is `ACTIVE`, the driver/attendant are operationally active with an active underlying staff account, and that none of bus/driver/attendant already has an overlapping trip that service date (409 on conflict). Snapshots the route's active stops into `trip_stops` in the same transaction. |
+| PATCH | `/trips/:id` | `trips.manage` | Same fields except `routeId`, all optional. Only while `SCHEDULED`/`READY` (400 otherwise). Re-validates and re-checks conflicts for whatever changed; reassigning anything while `READY` resets status to `SCHEDULED`. |
+| POST | `/trips/:id/ready` | `trips.manage` | `SCHEDULED` → `READY` only. Re-validates route/bus/driver/attendant against their *current* state, not their state at creation. |
+| POST | `/trips/:id/start` | `trips.read` (see note) | `READY` → `IN_PROGRESS` only. Sets `startedAt`; bulk-promotes every `PLANNED` manifest entry to `ACTIVE`. Gated by the weaker `trips.read` at the route level — the real check ("`trips.manage` OR the trip's own assigned driver") happens inside `TripsService`, the same pattern as `UsersService`'s "can't suspend your own account" check. |
+| POST | `/trips/:id/complete` | `trips.read` (see note) | `IN_PROGRESS` → `COMPLETED` only. Sets `endedAt`. Same driver-or-manage authorization as `/start`. |
+| POST | `/trips/:id/cancel` | `trips.manage` | `{reason}` (required). From `SCHEDULED`/`READY`/`IN_PROGRESS` only (400 if already terminal). |
+| POST | `/trips/:id/no-show` | `trips.manage` | `{reason}` (required). From `SCHEDULED`/`READY` only — never `IN_PROGRESS` (once started, it's not a no-show). |
+| GET | `/trips/:tripId/students` | `trips.read` | The manifest, excluding soft-removed entries. |
+| POST | `/trips/:tripId/students` | `trips.manage` | `{studentId, pickupTripStopId?, dropoffTripStopId?, notes?}` — at least one of pickup/dropoff required; either may be omitted/null to mean "the school itself" (a route's implicit terminus, never modeled as a stop). Any non-null stop id must belong to *this* trip's own `trip_stops` (400 otherwise) — a stop from another trip or the live route is rejected. 400 on a duplicate (non-removed) student; re-adding a previously-removed student revives that same row instead of erroring. |
+| PATCH | `/trips/:tripId/students/:tripStudentId` | `trips.manage` | `{pickupTripStopId?, dropoffTripStopId?, notes?}` — never `membershipStatus` directly (that only changes via add/remove/trip-start). |
+| DELETE | `/trips/:tripId/students/:tripStudentId` | `trips.manage` | Soft-removal only (`membershipStatus: 'REMOVED'`) — never a hard delete, so a trip's historical manifest stays auditable. |
 
 ### Attendance
 | Method | Path | Permission |

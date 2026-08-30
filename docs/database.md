@@ -43,7 +43,9 @@ routes   1───* trips
 buses    1───* trips
 drivers  1───* trips (assigned)
 attendants 1───* trips (assigned)
+trips    1───* trip_stops (immutable snapshot of route_stops at creation)
 trips    1───* trip_students ───1 students
+trip_stops 1───* trip_students (pickup/dropoff, nullable = "the school")
 trips    1───* attendance_events ───1 trip_students
 buses    1───* gps_points
 schools 1───* invitations (polymorphic: staff or parent principal)
@@ -438,7 +440,16 @@ sufficient for storing and displaying fixed points; nothing in this phase
 does geospatial querying (radius/distance calculations) that would justify
 it.
 
-### `trips`, `trip_students`
+### `trips`, `trip_stops`, `trip_students`
+
+Implemented in Phase 1 Step 5 (`TripsModule`/`TripStudentsModule`). Full
+design rationale — Trip-vs-Route separation, why `trip_stops` is a full
+immutable snapshot rather than a live reference to `route_stops`, why
+`scheduled_start_time`/`scheduled_end_time` are validated `"HH:mm"` strings
+rather than `DateTime`, the trip lifecycle graph, and why
+`membership_status` is a distinct concept from `current_status` — is in
+[ADR 0012](adr/0012-trip-stop-snapshot-and-lifecycle.md). Summary below.
+
 ```sql
 create table trips (
   id uuid primary key default gen_random_uuid(),
@@ -449,35 +460,77 @@ create table trips (
   attendant_id uuid references attendants(id),
   service_date date not null,
   shift text not null check (shift in ('MORNING_PICKUP','AFTERNOON_DROP','CUSTOM')),
-  status text not null default 'SCHEDULED' check (status in ('SCHEDULED','IN_PROGRESS','COMPLETED','CANCELLED')),
-  started_at timestamptz,
+  scheduled_start_time text not null, -- "HH:mm", school-local wall-clock — never converted to UTC
+  scheduled_end_time text not null,
+  status text not null default 'SCHEDULED'
+    check (status in ('SCHEDULED','READY','IN_PROGRESS','COMPLETED','CANCELLED','NO_SHOW')),
+  started_at timestamptz,   -- a real instant, unlike the scheduled_* columns above
   ended_at timestamptz,
+  cancellation_reason text, -- used for both CANCELLED and NO_SHOW
+  notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (route_id, service_date, shift)
 );
 create index on trips (school_id, service_date);
 create index on trips (bus_id, service_date);
+create index on trips (driver_id, service_date);
+create index on trips (attendant_id, service_date);
+
+-- Immutable snapshot of the route's active stops, copied at trip creation.
+-- Never edited after creation. See ADR 0012.
+create table trip_stops (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  trip_id uuid not null references trips(id) on delete cascade,
+  source_route_stop_id uuid references route_stops(id) on delete set null, -- traceability only
+  sequence_no int not null,
+  name text not null,
+  address text,
+  latitude double precision not null,
+  longitude double precision not null,
+  expected_offset_minutes int not null,
+  mode text not null check (mode in ('PICKUP','DROPOFF','BOTH')),
+  created_at timestamptz not null default now(),
+  unique (trip_id, sequence_no)
+);
+create index on trip_stops (school_id);
 
 create table trip_students (
   id uuid primary key default gen_random_uuid(),
   school_id uuid not null references schools(id),
   trip_id uuid not null references trips(id) on delete cascade,
   student_id uuid not null references students(id),
-  stop_id uuid references route_stops(id),
+  pickup_trip_stop_id uuid references trip_stops(id) on delete set null,  -- null = "the school" (implicit terminus)
+  dropoff_trip_stop_id uuid references trip_stops(id) on delete set null,
+  membership_status text not null default 'PLANNED' check (membership_status in ('PLANNED','ACTIVE','REMOVED')),
+  notes text,
   current_status text not null default 'EXPECTED'
     check (current_status in
       ('EXPECTED','BOARDING_PENDING','BOARDED','ABSENT','DROPPED_OFF','ARRIVED_AT_SCHOOL')),
+  created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (trip_id, student_id)
 );
 create index on trip_students (school_id);
 create index on trip_students (student_id);
 ```
-`trip_students.current_status` is a **derived, denormalized projection** for fast
-reads (dashboard, parent view). It is only ever written by the attendance service in
-response to an `attendance_events` insert — never written directly by a controller.
-This keeps the read-optimized column consistent with the append-only event log.
+
+`trip_students.pickup_trip_stop_id`/`dropoff_trip_stop_id` reference
+**this trip's own** `trip_stops`, never `route_stops` directly (Phase 0's
+scaffold had a single `stop_id` pointing at `route_stops`, replaced in
+Phase 1 Step 5 — see ADR 0012 for why). A stop id belonging to a
+*different* trip is rejected at the service layer (a bare foreign key can't
+express "must belong to trip X specifically").
+
+`trip_students.membership_status` (Step 5: "is this student on the
+manifest") is written directly by `TripStudentsService`.
+`trip_students.current_status` (Step 6 Attendance's future field: "what
+happened to them") is a **derived, denormalized projection** reserved for
+that module — nothing in Step 5 reads or writes it. Once Step 6 exists, it
+will only ever be written by the attendance service in response to an
+`attendance_events` insert, never directly by a controller, keeping the
+read-optimized column consistent with the append-only event log.
 
 ### `attendance_events`
 ```sql
