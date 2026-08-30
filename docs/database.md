@@ -754,6 +754,83 @@ IN_APP is never represented in this table — it is unconditional for every
 notification-producing event, so there is no row to flip that could
 accidentally suppress a required operational notification.
 
+### `safety_events`, `emergencies`, `emergency_actions` (Phase 2 Step 12)
+See [ADR 0019](adr/0019-safety-events-and-emergency-management.md) for the
+full SafetyEvent-vs-Emergency separation and state machine. Both are
+plain tenant-scoped tables — neither is ever queried pre-tenant, so
+neither needs `bus_devices`' platform-admin RLS bypass clause.
+```sql
+create table safety_events (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  bus_id uuid references buses(id),   -- all three optional and independently
+  trip_id uuid references trips(id),  -- nullable; re-verified against the
+  camera_id uuid references cameras(id), -- caller's own tenant when supplied
+  type text not null check (type in ('MANUAL_ALERT','EMERGENCY_BUTTON','CAMERA_ALERT','DRIVER_ALERT','ATTENDANT_ALERT','DOOR_OPEN','UNAUTHORIZED_ACCESS','MEDICAL','ACCIDENT','FIGHTING','SMOKE_FIRE','OTHER')),
+  severity text not null check (severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
+  status text not null default 'NEW' check (status in ('NEW','ACKNOWLEDGED','DISMISSED','ESCALATED','RESOLVED')),
+  source text not null check (source in ('HUMAN_OPERATOR','DRIVER','ATTENDANT','DEVICE','CAMERA','SYSTEM')), -- no AI value yet, deliberately
+  occurred_at timestamptz not null,   -- operator-reported time (may be in the past)
+  detected_at timestamptz not null default now(), -- server receipt time
+  description text,
+  metadata jsonb,   -- small, bounded, operator-entered context only — never raw video/face/biometric data
+  created_by uuid not null references users(id),
+  reviewed_by uuid references users(id),
+  reviewed_at timestamptz,
+  resolution_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on safety_events (school_id, occurred_at);
+create index on safety_events (school_id, status);
+create index on safety_events (school_id, severity);
+create index on safety_events (bus_id, occurred_at);
+create index on safety_events (trip_id, occurred_at);
+
+create table emergencies (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  trip_id uuid references trips(id),
+  bus_id uuid references buses(id),
+  initiated_by uuid not null references users(id),
+  source_safety_event_id uuid unique references safety_events(id), -- set only when created via escalation
+  status text not null default 'ACTIVE' check (status in ('ACTIVE','ACKNOWLEDGED','RESOLVED','CANCELLED')),
+  severity text not null check (severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
+  reason text,
+  started_at timestamptz not null default now(),
+  acknowledged_at timestamptz,
+  resolved_at timestamptz,
+  resolved_by uuid references users(id),
+  resolution_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on emergencies (school_id, status);
+create index on emergencies (bus_id, created_at);
+create index on emergencies (trip_id, created_at);
+
+-- Append-only response log — never edited or deleted, same convention as attendance_events.
+create table emergency_actions (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  emergency_id uuid not null references emergencies(id),
+  actor_id uuid not null references users(id),
+  action_type text not null check (action_type in ('ACKNOWLEDGED','CALLED_CONTACT','CONTACTED_SCHOOL','CONTACTED_EMERGENCY_SERVICE','DISPATCHED_HELP','RESOLVED','OTHER')),
+  note text,
+  created_at timestamptz not null default now()
+);
+create index on emergency_actions (emergency_id, created_at);
+```
+`PATCH`-style arbitrary status changes do not exist for either table —
+every transition is a dedicated endpoint
+(`/safety-events/:id/{acknowledge,dismiss,escalate,resolve}`,
+`/emergencies/:id/{acknowledge,resolve,cancel}`) with an explicit
+allowed-transitions map. `ESCALATED → RESOLVED` on `safety_events` is the
+one transition with no direct endpoint of its own — it happens only as a
+side effect of resolving the `emergencies` row it escalated into (see
+ADR 0019 Decision 5). `emergency_actions` rows are never updated or
+deleted; a correction is a new row.
+
 ### `audit_logs`
 ```sql
 create table audit_logs (
@@ -803,10 +880,12 @@ mint a short-lived signed URL after an authorization check — see
   `cameras` itself now exists (§3, Phase 2 Step 11); this event/history log
   does not yet.
 - `ai_events(id, school_id, bus_id, camera_id, event_type, confidence, severity, occurred_at, clip_file_id, model_version, status[NEW|REVIEWED|DISMISSED], metadata jsonb)`
-- `incidents(id, school_id, ai_event_id nullable, opened_by, status[OPEN|INVESTIGATING|RESOLVED], severity, summary, resolution, resolved_at, ...)`
+- `incidents(id, school_id, ai_event_id nullable, opened_by, status[OPEN|INVESTIGATING|RESOLVED], severity, summary, resolution, resolved_at, ...)` —
+  a distinct, still-unbuilt concept from `safety_events` (§3, Phase 2
+  Step 12): this is the future AI-events-adjudication pipeline, not the
+  human-operator safety-observation workflow that now exists.
 - `incident_events(id, incident_id, actor_id, action, notes, occurred_at)` — append-only
   investigation trail, same pattern as `attendance_events`.
-- `emergency_events(id, school_id, trip_id, raised_by, kind, status, occurred_at, resolved_at)`
 
 These are deferred in full DDL until Phase 2/3 design against actual device/vendor
 contracts (see [roadmap.md](roadmap.md)), but the shapes above are load-bearing for

@@ -13,7 +13,7 @@ const OPERATIONAL_STAFF_ROLES = ['SCHOOL_ADMIN', 'PRINCIPAL', 'TRANSPORT_ADMIN',
 interface CreateParams {
   schoolId: string;
   eventType: NotificationEventType;
-  entityType: 'ATTENDANCE_EVENT' | 'TRIP';
+  entityType: 'ATTENDANCE_EVENT' | 'TRIP' | 'SAFETY_EVENT' | 'EMERGENCY';
   entityId: string;
   recipientType: 'PARENT' | 'USER';
   recipientId: string;
@@ -72,6 +72,76 @@ export class NotificationsService implements OnModuleInit {
         // staff-facing audience list calls for a notification on these
         // transitions — see ADR 0016.
         return;
+      case 'SAFETY_EVENT_CRITICAL':
+        return this.handleSafetyEventCritical(event.schoolId, event.safetyEventId);
+      case 'EMERGENCY_CREATED':
+        return this.handleEmergencyEvent(event.schoolId, event.emergencyId, 'EMERGENCY_CREATED');
+      case 'EMERGENCY_RESOLVED':
+        return this.handleEmergencyEvent(event.schoolId, event.emergencyId, 'EMERGENCY_RESOLVED');
+    }
+  }
+
+  /**
+   * Only CRITICAL severity publishes this domain event at all (see
+   * SafetyEventsService) — LOW/MEDIUM/HIGH events never reach here, by
+   * construction, not by a filter in this class. Staff-only, same
+   * recipient list as GPS_STALE/GPS_OFFLINE/trip alerts (ADR 0016/0019).
+   */
+  private async handleSafetyEventCritical(schoolId: string, safetyEventId: string): Promise<void> {
+    const event = await this.prisma.runInTenantContext(schoolId, (tx) =>
+      tx.safetyEvent.findFirst({
+        where: { id: safetyEventId },
+        select: { type: true, bus: { select: { registrationNumber: true, fleetNumber: true } } },
+      }),
+    );
+    if (!event) return;
+    const content = NotificationTemplates.SAFETY_EVENT_CRITICAL({
+      eventTypeLabel: event.type.replace(/_/g, ' ').toLowerCase(),
+      busDisplayName: event.bus ? this.busDisplayName(event.bus) : '',
+    });
+
+    const staffUserIds = await this.resolveOperationalStaffRecipients(schoolId);
+    for (const userId of staffUserIds) {
+      await this.createIfNew({
+        schoolId,
+        eventType: 'SAFETY_EVENT_CRITICAL',
+        entityType: 'SAFETY_EVENT',
+        entityId: safetyEventId,
+        recipientType: 'USER',
+        recipientId: userId,
+        content,
+        payload: { safetyEventId },
+      });
+    }
+  }
+
+  private async handleEmergencyEvent(
+    schoolId: string,
+    emergencyId: string,
+    eventType: 'EMERGENCY_CREATED' | 'EMERGENCY_RESOLVED',
+  ): Promise<void> {
+    const emergency = await this.prisma.runInTenantContext(schoolId, (tx) =>
+      tx.emergency.findFirst({
+        where: { id: emergencyId },
+        select: { bus: { select: { registrationNumber: true, fleetNumber: true } } },
+      }),
+    );
+    const content = NotificationTemplates[eventType]({
+      busDisplayName: emergency?.bus ? this.busDisplayName(emergency.bus) : '',
+    });
+
+    const staffUserIds = await this.resolveOperationalStaffRecipients(schoolId);
+    for (const userId of staffUserIds) {
+      await this.createIfNew({
+        schoolId,
+        eventType,
+        entityType: 'EMERGENCY',
+        entityId: emergencyId,
+        recipientType: 'USER',
+        recipientId: userId,
+        content,
+        payload: { emergencyId },
+      });
     }
   }
 

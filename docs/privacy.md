@@ -42,11 +42,31 @@ requirements this document does not attempt to interpret authoritatively.
 | GPS points | Bus device | School staff (`gps.read`); parent sees only current/derived location for own child's active trip, never raw historical trails | Raw points: short window (default 90 days) then aggregated/discarded; live state not retained beyond trip completion in derived form |
 | Camera inventory & metadata (Phase 2 Step 11) | School staff (registration) | `camera.read`/`camera.manage` roles only; **never parents** | Kept for the fleet asset's lifetime, same as `buses`/`bus_devices` — not footage, see below |
 | Camera footage/clips/streaming (Phase 2, not yet built) | Bus camera | Only `camera.read`/`ai_events.review`/`incidents.*` roles; **never parents** | Short default (e.g., 30 days) unless attached to an open incident, then held per incident retention until resolution + defined window |
+| Safety events & emergencies (Phase 2 Step 12) | Human operator/driver/attendant, own-trip-scoped for the latter two | `safety_events.*`/`emergency.*` roles only; **never parents** | Never purged/hard-deleted — operational history, see §4 |
 | AI safety events (Phase 3) | AI service | `ai_events.read/review` roles only | Tied to incident retention if escalated; otherwise short-lived |
 | Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
 Concrete retention day-counts above are defaults, not fixed — see §4.
+
+**Implementation status (Phase 2 Step 12):** safety events and emergency
+management are now real — a human operator, driver, or attendant can
+report a safety observation or trigger an emergency, and operational staff
+can triage/respond to it, all genuinely stored and enforced. No AI,
+computer vision, facial/behavior recognition, or geofencing is involved
+anywhere in this — every event's `source` is `HUMAN_OPERATOR`/`DRIVER`/
+`ATTENDANT` (device/camera/system sources exist in the schema for future
+use but nothing currently produces them; see
+[ADR 0019](adr/0019-safety-events-and-emergency-management.md)). No parent
+capability exists on any of this data — not a permission gap to be widened
+later, but a hard product requirement, identical in spirit to Step 11's
+camera stance: there is no parent-audience route on either controller, no
+safety/emergency field on any parent DTO, and no safety/emergency event on
+the parent realtime channel. Data collected is deliberately minimal:
+`description`/`reason`/`resolutionNote` are free-text fields an operator
+types themselves, and `metadata` is a small, Zod-bounded blob — no face
+data, no biometric identifiers, no raw video, and no image is ever
+automatically captured.
 
 **Implementation status (Phase 2 Step 11):** camera *inventory and device
 management* is now real — a camera's name/position/status/manufacturer/
@@ -155,6 +175,15 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
   no camera field on any parent DTO, and no camera event on the parent
   realtime channel — not an oversight to close later, a hard product
   requirement (see [ADR 0018](adr/0018-camera-device-management-foundation.md)).
+- Safety events or emergency records, in any form (Phase 2 Step 12) — no
+  parent-audience route, DTO field, or realtime event exists for either;
+  a parent is never told their child's bus had a reported safety event or
+  an active emergency through this system (see
+  [ADR 0019](adr/0019-safety-events-and-emergency-management.md); if a
+  future product decision requires notifying parents of a real emergency,
+  that would be a new, deliberately-designed parent-safe notification
+  template — never exposure of the internal `SafetyEvent`/`Emergency`
+  object).
 - AI-generated events or confidence scores.
 - Incident records or investigation notes.
 - Any other student's data, including siblings' classmates on the same bus.

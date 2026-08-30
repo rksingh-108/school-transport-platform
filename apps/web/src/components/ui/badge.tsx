@@ -35,6 +35,20 @@ const STATUS_TONE: Record<string, Tone> = {
   BOARDED: 'success',
   ABSENT: 'danger',
   DROPPED_OFF: 'success',
+  // Safety events (Phase 2 Step 12). Emergency.status intentionally does
+  // NOT reuse this map for its own ACTIVE/ACKNOWLEDGED values — see the
+  // dedicated tone helper on the emergencies pages, since "ACTIVE" here
+  // means "urgent, unresolved," not the generic ACTIVE=good-state meaning
+  // this map already uses for School/Bus statuses above.
+  NEW: 'warning',
+  ACKNOWLEDGED: 'neutral',
+  DISMISSED: 'neutral',
+  ESCALATED: 'danger',
+  RESOLVED: 'success',
+  LOW: 'neutral',
+  MEDIUM: 'warning',
+  HIGH: 'warning',
+  CRITICAL: 'danger',
 };
 
 export function Badge({ tone = 'neutral', children }: { tone?: Tone; children: React.ReactNode }) {

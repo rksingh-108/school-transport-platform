@@ -20,6 +20,8 @@ const NAV_ITEMS = [
   { href: '/dashboard/routes', label: 'Routes', permission: 'routes.read' },
   { href: '/dashboard/trips', label: 'Trips', permission: 'trips.read' },
   { href: '/dashboard/live', label: 'Live Tracking', permission: 'gps.read' },
+  { href: '/dashboard/safety-events', label: 'Safety Events', permission: 'safety_events.read' },
+  { href: '/dashboard/emergencies', label: 'Emergencies', permission: 'emergency.read' },
   { href: '/dashboard/notifications', label: 'Alerts', permission: 'notifications.read' },
 ] as const;
 

@@ -15,3 +15,5 @@ export * from './attendance';
 export * from './gps';
 export * from './notifications';
 export * from './cameras';
+export * from './safety-events';
+export * from './emergencies';

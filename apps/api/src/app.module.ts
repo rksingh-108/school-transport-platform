@@ -25,6 +25,7 @@ import { TripsModule } from './trips/trips.module';
 import { GpsModule } from './gps/gps.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { CamerasModule } from './cameras/cameras.module';
+import { SafetyModule } from './safety/safety.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 @Module({
@@ -57,6 +58,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     GpsModule,
     NotificationsModule,
     CamerasModule,
+    SafetyModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

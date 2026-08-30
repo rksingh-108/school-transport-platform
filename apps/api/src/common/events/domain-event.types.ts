@@ -17,6 +17,13 @@ export type DomainEvent =
   | { type: 'TRIP_CANCELLED'; schoolId: string; tripId: string; reason: string }
   | { type: 'TRIP_NO_SHOW'; schoolId: string; tripId: string; reason: string }
   | { type: 'GPS_STALE'; schoolId: string; tripId: string; busId: string }
-  | { type: 'GPS_OFFLINE'; schoolId: string; tripId: string; busId: string };
+  | { type: 'GPS_OFFLINE'; schoolId: string; tripId: string; busId: string }
+  // Phase 2 Step 12. Not every SafetyEvent publishes a domain event — only
+  // CRITICAL severity does (see NotificationsService and ADR 0019's
+  // anti-notification-storm reasoning), so this is intentionally named for
+  // the specific case rather than a generic 'SAFETY_EVENT_CREATED'.
+  | { type: 'SAFETY_EVENT_CRITICAL'; schoolId: string; safetyEventId: string }
+  | { type: 'EMERGENCY_CREATED'; schoolId: string; emergencyId: string }
+  | { type: 'EMERGENCY_RESOLVED'; schoolId: string; emergencyId: string };
 
 export type DomainEventType = DomainEvent['type'];

@@ -166,6 +166,92 @@ enum CameraStreamType {
   VENDOR
 }
 
+// Safety-event / emergency-management enums (Phase 2 Step 12) — see
+// SafetyEvent/Emergency below.
+
+// Event categories a human operator (or, in Phase 3, AI) reports — not AI
+// classifications. Deliberately not "dozens of speculative types": this is
+// the minimum controlled taxonomy the step's own instructions specify.
+enum SafetyEventType {
+  MANUAL_ALERT
+  EMERGENCY_BUTTON
+  CAMERA_ALERT
+  DRIVER_ALERT
+  ATTENDANT_ALERT
+  DOOR_OPEN
+  UNAUTHORIZED_ACCESS
+  MEDICAL
+  ACCIDENT
+  FIGHTING
+  SMOKE_FIRE
+  OTHER
+}
+
+// Shared by SafetyEvent and Emergency — one severity concept, not two
+// identical enums with different names.
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// Who/what reported the event. AI is deliberately NOT a value here yet —
+// Phase 3's AI integration will add it (and only it) to this enum in the
+// migration that actually starts producing AI-sourced events, not before;
+// see the identical reasoning already applied to DeviceType/CAMERA_CONTROLLER
+// in Phase 1 Step 3 / Phase 2 Step 11.
+enum SafetyEventSource {
+  HUMAN_OPERATOR
+  DRIVER
+  ATTENDANT
+  DEVICE
+  CAMERA
+  SYSTEM
+}
+
+// NEW: created, not yet triaged. ACKNOWLEDGED: a human operator has seen it
+// and is handling it (terminal-ish but see ESCALATED). DISMISSED: reviewed
+// and judged not to require further action — terminal. ESCALATED: judged to
+// require a real Emergency — see Emergency.sourceSafetyEventId; terminal for
+// this event (the Emergency is now the live record). RESOLVED: handled
+// without needing escalation — terminal. Not every event becomes an
+// Emergency — see ADR 0019.
+enum SafetyEventStatus {
+  NEW
+  ACKNOWLEDGED
+  DISMISSED
+  ESCALATED
+  RESOLVED
+}
+
+// ACTIVE: just triggered, nobody has yet confirmed they're handling it.
+// ACKNOWLEDGED: a staff member has confirmed they're on it. RESOLVED:
+// terminal — handled. CANCELLED: terminal — determined to be a false alarm
+// or no longer applicable, distinct from RESOLVED (which implies a real
+// emergency that was handled). Never physically deleted — see ADR 0019.
+enum EmergencyStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+  CANCELLED
+}
+
+// What an operator did in response to an active emergency — an append-only
+// log, not a status. CONTACTED_EMERGENCY_SERVICE records only that an
+// operator logged having made contact themselves (e.g. by phone) — it is
+// never set automatically, and this platform never actually places that
+// call or contacts any external service itself (see ADR 0019).
+enum EmergencyActionType {
+  ACKNOWLEDGED
+  CALLED_CONTACT
+  CONTACTED_SCHOOL
+  CONTACTED_EMERGENCY_SERVICE
+  DISPATCHED_HELP
+  RESOLVED
+  OTHER
+}
+
 enum Shift {
   MORNING_PICKUP
   AFTERNOON_DROP
@@ -305,6 +391,15 @@ enum NotificationEventType {
   TRIP_NO_SHOW
   GPS_STALE
   GPS_OFFLINE
+  // Phase 2 Step 12 — staff-only, mirroring GPS_STALE/GPS_OFFLINE's
+  // staff-only audience. SAFETY_EVENT_CRITICAL fires only for CRITICAL
+  // severity (not every safety event — see ADR 0019's anti-notification-
+  // storm reasoning). EMERGENCY_ACKNOWLEDGED/EMERGENCY_RESOLVED are the two
+  // real staff-audience lifecycle transitions worth a notification; ACTIVE
+  // itself is covered by EMERGENCY_CREATED.
+  SAFETY_EVENT_CRITICAL
+  EMERGENCY_CREATED
+  EMERGENCY_RESOLVED
 }
 
 // Per-channel delivery outcome — distinct from a "logical notification"
@@ -373,6 +468,9 @@ model School {
   buses                  Bus[]
   busDevices             BusDevice[]
   cameras                Camera[]
+  safetyEvents           SafetyEvent[]
+  emergencies            Emergency[]
+  emergencyActions       EmergencyAction[]
   drivers                Driver[]
   attendants             Attendant[]
   routes                 Route[]
@@ -425,6 +523,11 @@ model User {
   recordedAttendanceEvents AttendanceEvent[] @relation("AttendanceEventRecordedBy")
   createdFiles             File[]            @relation("FileCreatedBy")
   invitationsSent          Invitation[]      @relation("InvitationInvitedBy")
+  safetyEventsCreated      SafetyEvent[]     @relation("SafetyEventCreatedBy")
+  safetyEventsReviewed     SafetyEvent[]     @relation("SafetyEventReviewedBy")
+  emergenciesInitiated     Emergency[]       @relation("EmergencyInitiatedBy")
+  emergenciesResolved      Emergency[]       @relation("EmergencyResolvedBy")
+  emergencyActions         EmergencyAction[]
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -575,11 +678,13 @@ model Bus {
   updatedAt          DateTime  @updatedAt @map("updated_at")
   deletedAt          DateTime? @map("deleted_at")
 
-  school    School      @relation(fields: [schoolId], references: [id])
-  devices   BusDevice[]
-  trips     Trip[]
-  gpsPoints GpsPoint[]
-  cameras   Camera[]
+  school       School        @relation(fields: [schoolId], references: [id])
+  devices      BusDevice[]
+  trips        Trip[]
+  gpsPoints    GpsPoint[]
+  cameras      Camera[]
+  safetyEvents SafetyEvent[]
+  emergencies  Emergency[]
 
   @@unique([schoolId, registrationNumber])
   @@unique([schoolId, fleetNumber])
@@ -644,31 +749,155 @@ model BusDevice {
 // device, never independently client-writable, so they can never drift from
 // the device they describe.
 model Camera {
-  id                  String            @id @default(uuid())
-  schoolId            String            @map("school_id")
-  busId               String            @map("bus_id")
-  busDeviceId         String            @unique @map("bus_device_id")
-  cameraCode          String            @map("camera_code")
+  id                  String           @id @default(uuid())
+  schoolId            String           @map("school_id")
+  busId               String           @map("bus_id")
+  busDeviceId         String           @unique @map("bus_device_id")
+  cameraCode          String           @map("camera_code")
   name                String
   position            CameraPosition
   // Only meaningful when position = CUSTOM; validated at the Zod/service
   // layer (not a DB CHECK, matching how this schema handles every other
   // conditionally-required field).
-  customPositionLabel String?           @map("custom_position_label")
-  status              CameraStatus      @default(ACTIVE)
+  customPositionLabel String?          @map("custom_position_label")
+  status              CameraStatus     @default(ACTIVE)
   manufacturer        String?
   model               String?
-  streamType          CameraStreamType  @default(NONE) @map("stream_type")
-  createdAt           DateTime          @default(now()) @map("created_at")
-  updatedAt           DateTime          @updatedAt @map("updated_at")
+  streamType          CameraStreamType @default(NONE) @map("stream_type")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
 
-  school    School    @relation(fields: [schoolId], references: [id])
-  bus       Bus       @relation(fields: [busId], references: [id])
-  busDevice BusDevice @relation(fields: [busDeviceId], references: [id])
+  school       School        @relation(fields: [schoolId], references: [id])
+  bus          Bus           @relation(fields: [busId], references: [id])
+  busDevice    BusDevice     @relation(fields: [busDeviceId], references: [id])
+  safetyEvents SafetyEvent[]
 
   @@unique([schoolId, cameraCode])
   @@index([busId])
   @@map("cameras")
+}
+
+// ---------------------------------------------------------------------------
+// Safety events / emergency management (Phase 2 Step 12)
+// ---------------------------------------------------------------------------
+
+// "A potentially relevant safety observation occurred" — deliberately a
+// separate, weaker concept than Emergency ("a confirmed operational/safety
+// issue requiring response"). Not every SafetyEvent becomes an Emergency;
+// most are triaged (acknowledged/dismissed/resolved) without ever
+// escalating. This separation matters because Phase 3's AI integration will
+// produce candidate SafetyEvents a human must review — the review step must
+// already exist and already matter before AI can feed into it. See
+// ADR 0019.
+model SafetyEvent {
+  id             String            @id @default(uuid())
+  schoolId       String            @map("school_id")
+  // All three are optional and independently nullable — a MANUAL_ALERT from
+  // an operator reviewing footage after the fact may have no bus/trip
+  // context at all; a DRIVER_ALERT always has both. Never a client-supplied
+  // schoolId; busId/tripId/cameraId, when supplied, are always re-verified
+  // against the caller's own tenant server-side (see SafetyEventsService).
+  busId          String?           @map("bus_id")
+  tripId         String?           @map("trip_id")
+  cameraId       String?           @map("camera_id")
+  type           SafetyEventType
+  severity       Severity
+  status         SafetyEventStatus @default(NEW)
+  source         SafetyEventSource
+  // The operator-reported/observed time (may be in the past — e.g.
+  // reporting something noticed a few minutes ago), distinct from
+  // detectedAt (server receipt time, always "now" at creation) — same
+  // recordedAt-vs-receivedAt split already used for GPS telemetry.
+  occurredAt     DateTime          @map("occurred_at")
+  detectedAt     DateTime          @default(now()) @map("detected_at")
+  description    String?
+  // Small, bounded, operator-entered context only — never raw video, face
+  // data, or biometric identifiers (enforced by size limits at the Zod
+  // layer, not just convention — see SafetyEventsService).
+  metadata       Json?
+  createdBy      String            @map("created_by")
+  reviewedBy     String?           @map("reviewed_by")
+  reviewedAt     DateTime?         @map("reviewed_at")
+  resolutionNote String?           @map("resolution_note")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  school    School     @relation(fields: [schoolId], references: [id])
+  bus       Bus?       @relation(fields: [busId], references: [id])
+  trip      Trip?      @relation(fields: [tripId], references: [id])
+  camera    Camera?    @relation(fields: [cameraId], references: [id])
+  creator   User       @relation("SafetyEventCreatedBy", fields: [createdBy], references: [id])
+  reviewer  User?      @relation("SafetyEventReviewedBy", fields: [reviewedBy], references: [id])
+  emergency Emergency?
+
+  @@index([schoolId, occurredAt])
+  @@index([schoolId, status])
+  @@index([schoolId, severity])
+  @@index([busId, occurredAt])
+  @@index([tripId, occurredAt])
+  @@map("safety_events")
+}
+
+// "A confirmed operational/safety issue requiring response." Created either
+// directly (the emergency button / POST /emergencies) or by escalating a
+// SafetyEvent (sourceSafetyEventId) — never automatically from a severity
+// threshold alone (see ADR 0019's rejection of "every CRITICAL event becomes
+// an emergency"). Never physically deleted: CANCELLED is the "this wasn't
+// real" terminal state, distinct from RESOLVED ("this was real and was
+// handled") — both preserve full history.
+model Emergency {
+  id                  String          @id @default(uuid())
+  schoolId            String          @map("school_id")
+  tripId              String?         @map("trip_id")
+  busId               String?         @map("bus_id")
+  initiatedBy         String          @map("initiated_by")
+  // Set only when this emergency was created via POST /safety-events/:id/escalate.
+  // Null for a directly-triggered emergency (the button).
+  sourceSafetyEventId String?         @unique @map("source_safety_event_id")
+  status              EmergencyStatus @default(ACTIVE)
+  severity            Severity
+  reason              String?
+  startedAt           DateTime        @default(now()) @map("started_at")
+  acknowledgedAt      DateTime?       @map("acknowledged_at")
+  resolvedAt          DateTime?       @map("resolved_at")
+  resolvedBy          String?         @map("resolved_by")
+  resolutionNote      String?         @map("resolution_note")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  school            School            @relation(fields: [schoolId], references: [id])
+  trip              Trip?             @relation(fields: [tripId], references: [id])
+  bus               Bus?              @relation(fields: [busId], references: [id])
+  initiator         User              @relation("EmergencyInitiatedBy", fields: [initiatedBy], references: [id])
+  resolver          User?             @relation("EmergencyResolvedBy", fields: [resolvedBy], references: [id])
+  sourceSafetyEvent SafetyEvent?      @relation(fields: [sourceSafetyEventId], references: [id])
+  actions           EmergencyAction[]
+
+  @@index([schoolId, status])
+  @@index([busId, createdAt])
+  @@index([tripId, createdAt])
+  @@map("emergencies")
+}
+
+// Append-only response log — never edited or deleted; a correction is a new
+// row, same "immutable event log" convention as AttendanceEvent.
+// CONTACTED_EMERGENCY_SERVICE records only that an operator logged the
+// action themselves; see the enum's own doc comment.
+model EmergencyAction {
+  id          String              @id @default(uuid())
+  schoolId    String              @map("school_id")
+  emergencyId String              @map("emergency_id")
+  actorId     String              @map("actor_id")
+  actionType  EmergencyActionType @map("action_type")
+  note        String?
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  school    School    @relation(fields: [schoolId], references: [id])
+  emergency Emergency @relation(fields: [emergencyId], references: [id])
+  actor     User      @relation(fields: [actorId], references: [id])
+
+  @@index([emergencyId, createdAt])
+  @@map("emergency_actions")
 }
 
 model Driver {
@@ -816,6 +1045,8 @@ model Trip {
   tripStudents     TripStudent[]
   attendanceEvents AttendanceEvent[]
   gpsPoints        GpsPoint[]
+  safetyEvents     SafetyEvent[]
+  emergencies      Emergency[]
 
   @@unique([routeId, serviceDate, shift])
   @@index([schoolId, serviceDate])

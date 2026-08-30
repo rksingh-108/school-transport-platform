@@ -207,11 +207,40 @@ surface):
    camera streaming/recording/playback, camera-triggered events
    (`camera_events`), any AI processing, MQTT device ingestion (heartbeat
    stays HTTP, matching GPS).
-3. Emergency system (real escalation: staff notification fanout, status tracking).
+3. **Safety events + emergency management (real escalation: staff
+   notification fanout, status tracking). Done** — `SafetyModule`
+   (`apps/api/src/safety/`): human/operator/driver/attendant-reported
+   `SafetyEvent`s with a controlled triage lifecycle
+   (`NEW → ACKNOWLEDGED/DISMISSED/ESCALATED/RESOLVED`), a real `Emergency`
+   response workflow (`ACTIVE → ACKNOWLEDGED → RESOLVED`, or `→ CANCELLED`)
+   with an append-only `EmergencyAction` response log, and a controlled
+   escalation path from one into the other. No AI, no computer vision, no
+   geofencing — every event's `source` is human (`HUMAN_OPERATOR`/`DRIVER`/
+   `ATTENDANT`). See
+   [ADR 0019](adr/0019-safety-events-and-emergency-management.md). Reuses
+   Step 9's notification infrastructure (`SAFETY_EVENT_CRITICAL`/
+   `EMERGENCY_CREATED`/`EMERGENCY_RESOLVED`, staff-only, no notification
+   storm — only `CRITICAL` severity notifies) and adds one new realtime
+   namespace, `/realtime/safety`. DRIVER/BUS_ATTENDANT can report an alert
+   or trigger an emergency for their own currently-assigned trip only
+   (profile-based scoping, reusing GPS/Trips' existing pattern) — never
+   school-wide. Tests: full lifecycle/state-machine coverage for both
+   models, RBAC, cross-tenant IDOR, RLS, audit, notification-storm
+   avoidance, and `/realtime/safety` Socket.IO authorization with a real
+   client — confirmed both in e2e tests and live against the running
+   server. **Not done** (explicitly deferred, per this step's own scope):
+   any AI/computer-vision detection, geofencing, a driver/attendant-facing
+   mobile UI (the API is complete and tested; no dedicated UI exists, since
+   "Driver/Attendant UI" — item 15 below — remains unbuilt generally), and
+   any real external emergency-service integration
+   (`CONTACTED_EMERGENCY_SERVICE` only records that an operator logged
+   having made contact themselves).
 4. Geofencing (school zone, route corridor) + violation events.
 5. Speed monitoring + violation events.
 6. Incident management module (manual incidents first, independent of AI — a
-   security/staff-reported incident doesn't require Phase 3 to exist).
+   security/staff-reported incident doesn't require Phase 3 to exist). Distinct
+   from the human-operator `SafetyEvent`/`Emergency` workflow above (item 3) —
+   this remains the future AI-events-adjudication pipeline.
 
 ## Phase 3 — Edge AI
 1. `apps/ai-service` implementation against the `AIInferenceProvider` /

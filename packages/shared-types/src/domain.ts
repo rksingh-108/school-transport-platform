@@ -205,6 +205,84 @@ export interface CameraStreamAvailabilityDto {
   message: string;
 }
 
+/**
+ * Staff-only — there is no parent-facing equivalent anywhere in this
+ * codebase (docs/privacy.md). `metadata` is the small, bounded,
+ * operator-entered blob validated at the Zod layer — never raw video,
+ * face, or biometric data. `emergencyId` is set only once this event has
+ * been escalated (`status: 'ESCALATED'`).
+ */
+export interface SafetyEventDto {
+  id: string;
+  busId: string | null;
+  tripId: string | null;
+  cameraId: string | null;
+  type:
+    | 'MANUAL_ALERT'
+    | 'EMERGENCY_BUTTON'
+    | 'CAMERA_ALERT'
+    | 'DRIVER_ALERT'
+    | 'ATTENDANT_ALERT'
+    | 'DOOR_OPEN'
+    | 'UNAUTHORIZED_ACCESS'
+    | 'MEDICAL'
+    | 'ACCIDENT'
+    | 'FIGHTING'
+    | 'SMOKE_FIRE'
+    | 'OTHER';
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  status: 'NEW' | 'ACKNOWLEDGED' | 'DISMISSED' | 'ESCALATED' | 'RESOLVED';
+  source: 'HUMAN_OPERATOR' | 'DRIVER' | 'ATTENDANT' | 'DEVICE' | 'CAMERA' | 'SYSTEM';
+  occurredAt: string;
+  detectedAt: string;
+  description: string | null;
+  metadata: Record<string, unknown> | null;
+  createdBy: string;
+  createdByName: string;
+  reviewedBy: string | null;
+  reviewedByName: string | null;
+  reviewedAt: string | null;
+  resolutionNote: string | null;
+  emergencyId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmergencyActionDto {
+  id: string;
+  actorId: string;
+  actorName: string;
+  actionType: 'ACKNOWLEDGED' | 'CALLED_CONTACT' | 'CONTACTED_SCHOOL' | 'CONTACTED_EMERGENCY_SERVICE' | 'DISPATCHED_HELP' | 'RESOLVED' | 'OTHER';
+  note: string | null;
+  createdAt: string;
+}
+
+/**
+ * Staff-only — there is no parent-facing equivalent anywhere in this
+ * codebase (docs/privacy.md). `actions` is the full append-only response
+ * log; nothing in it is ever deleted or edited.
+ */
+export interface EmergencyDto {
+  id: string;
+  tripId: string | null;
+  busId: string | null;
+  initiatedBy: string;
+  initiatedByName: string;
+  sourceSafetyEventId: string | null;
+  status: 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED' | 'CANCELLED';
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  reason: string | null;
+  startedAt: string;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+  resolvedByName: string | null;
+  resolutionNote: string | null;
+  actions: EmergencyActionDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** A reusable planned path — never a specific day's execution (that's the future Trip). See docs/database.md §8. */
 export interface RouteDto {
   id: string;

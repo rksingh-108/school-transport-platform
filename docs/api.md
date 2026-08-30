@@ -313,6 +313,38 @@ none is planned for this phase — see
 [security.md §4](security.md#4-parent-data-access-boundary) and
 [privacy.md](privacy.md).
 
+### Safety Events & Emergencies (Phase 2 Step 12)
+
+Implemented — `apps/api/src/safety/`. Human/operator-generated safety
+observations and a real emergency-response workflow; no AI, no camera
+detection, no geofencing. See
+[ADR 0019](adr/0019-safety-events-and-emergency-management.md) for the
+SafetyEvent-vs-Emergency separation, the state machines, and the
+DRIVER/BUS_ATTENDANT own-trip scoping.
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/safety-events` | `safety_events.read` | Cursor-paginated; `?status`, `?severity`, `?type`, `?busId`, `?tripId`, `?from`, `?to`. |
+| GET | `/safety-events/:id` | `safety_events.read` | |
+| POST | `/safety-events` | `safety_events.create` | `{busId?, tripId?, cameraId?, type, severity, description?, occurredAt?, metadata?}`. Gated by the narrowest shared permission; DRIVER/BUS_ATTENDANT are scoped to their own current trip inside the service (400 with no active trip and nothing supplied; 403 if a supplied busId/tripId doesn't match it), staff may reference any bus/trip/camera in their own tenant or none at all. `createdBy`/`source`/`schoolId` are never accepted from the client. |
+| POST | `/safety-events/:id/acknowledge` | `safety_events.manage` | `NEW → ACKNOWLEDGED` only. |
+| POST | `/safety-events/:id/dismiss` | `safety_events.manage` | `NEW`/`ACKNOWLEDGED → DISMISSED` (terminal). `{resolutionNote?}`. |
+| POST | `/safety-events/:id/escalate` | `safety_events.manage` | `NEW`/`ACKNOWLEDGED → ESCALATED` (terminal for this endpoint). Creates a linked, `ACTIVE` `Emergency` in the same transaction and returns the updated event with `emergencyId` set. |
+| POST | `/safety-events/:id/resolve` | `safety_events.manage` | `NEW`/`ACKNOWLEDGED → RESOLVED` (terminal). `{resolutionNote?}`. Rejected once `ESCALATED` — see the emergency-resolution note below. |
+| GET | `/emergencies` | `emergency.read` | Cursor-paginated; `?status`, `?busId`, `?tripId`. |
+| GET | `/emergencies/:id` | `emergency.read` | Includes the full, append-only `actions` response history. |
+| POST | `/emergencies` | `emergency.create` | The emergency-button path. `{busId?, tripId?, severity?, reason?}` — `severity` defaults `CRITICAL`. Same own-trip scoping as safety-event creation for DRIVER/BUS_ATTENDANT; staff may trigger with no bus/trip at all (an on-campus emergency). `initiatedBy`/`schoolId` are never accepted from the client. |
+| POST | `/emergencies/:id/acknowledge` | `emergency.manage` | `ACTIVE → ACKNOWLEDGED` only. |
+| POST | `/emergencies/:id/actions` | `emergency.manage` | `{actionType, note?}` — append-only; rejected (400) once `RESOLVED`/`CANCELLED`. `CONTACTED_EMERGENCY_SERVICE` records only that an operator logged the action themselves — never a real external call (ADR 0019). |
+| POST | `/emergencies/:id/resolve` | `emergency.manage` | `ACTIVE`/`ACKNOWLEDGED → RESOLVED` (terminal). If this emergency has a `sourceSafetyEventId`, that event is also flipped `ESCALATED → RESOLVED` in the same transaction. |
+| POST | `/emergencies/:id/cancel` | `emergency.manage` | `ACTIVE`/`ACKNOWLEDGED → CANCELLED` (terminal) — a false alarm, distinct from `RESOLVED`. |
+
+There is no parent-facing safety-event or emergency endpoint anywhere in
+this codebase — see [privacy.md](privacy.md). Realtime updates
+(`safety.event.created`/`.updated`, `emergency.created`/`.updated`) are
+pushed via a dedicated staff-only `/realtime/safety` Socket.IO namespace
+(§4 below) — no polling is required for the dashboard to stay current.
+
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
 `ParentSelfController`/`ParentTransportController` (`@RequireAudience('PARENT')`,
@@ -382,14 +414,14 @@ their own alerts, never another admin's.
 
 ## 3. Phase 2/3 Endpoint Groups (outlined, not built yet)
 
-`/cameras` itself is now built (§2, Phase 2 Step 11) — streaming/recording
-playback, camera-triggered events, and everything below remain outlined
-only:
+`/cameras` (§2, Phase 2 Step 11) and `/safety-events`+`/emergencies` (§2,
+Phase 2 Step 12) are now built. Streaming/recording playback,
+camera-triggered events, AI-produced safety events, and everything below
+remain outlined only:
 
 - `/ai-events`, `/ai-events/:id/review` — `ai_events.read` / `ai_events.review`
-- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve`
+- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt concept from `/safety-events` (see database.md §4)
 - `/geofences`, `/speed-events` — Phase 2
-- `/emergency` (POST, from driver/attendant app) — highest-priority notification fanout
 
 None of these are exposed to the parent namespace, ever (see
 [privacy.md](privacy.md)).
@@ -441,10 +473,30 @@ None of these are exposed to the parent namespace, ever (see
   staff notifications are in-app + REST poll only this phase — an accepted
   MVP scope cut, not an oversight; see
   [ADR 0016](adr/0016-notifications-and-alerts.md).
+- **`/realtime/safety` (Socket.IO namespace, staff only — implemented
+  Phase 2 Step 12)**: a separate namespace from `/realtime/fleet` — the
+  authorization check differs (`safety_events.read` or `emergency.read`,
+  not `gps.read`), so conflating them would grant fleet visibility to
+  `SECURITY` and vice versa. Same handshake shape (`auth: { token }`); a
+  missing/invalid/parent token, or a staff token lacking both permissions
+  (e.g. `DRIVER`/`BUS_ATTENDANT`, who hold neither), is disconnected
+  immediately. On success the server joins the socket into the single
+  whole-school room `school:{schoolId}:safety` — no per-bus granularity
+  (unlike `/realtime/fleet`'s fleet-vs-bus split), since every role that
+  can see this dashboard at all is meant to see every event in their
+  school. No `@SubscribeMessage` handler exists, so there is no mechanism
+  for a client to request a different room. Server pushes:
+  ```
+  safety.event.created   — a SafetyEventDto, on POST /safety-events
+  safety.event.updated   — a SafetyEventDto, on any lifecycle transition
+  emergency.created      — an EmergencyDto, on POST /emergencies or an escalation
+  emergency.updated      — an EmergencyDto, on any lifecycle transition or a new response action
+  ```
+  See [ADR 0019](adr/0019-safety-events-and-emergency-management.md).
 - `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
   outline names; the implemented namespace/event names differ
-  (`/realtime/fleet`, `/realtime/parent`) and this section now reflects
-  what actually ships.
+  (`/realtime/fleet`, `/realtime/parent`, `/realtime/safety`) and this
+  section now reflects what actually ships.
 
 ## 5. Versioning
 

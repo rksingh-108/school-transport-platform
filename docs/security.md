@@ -127,7 +127,8 @@ gps.read
 camera.read, camera.manage
 ai_events.read, ai_events.review
 incidents.create, incidents.read, incidents.resolve
-emergency.create, emergency.read
+emergency.create, emergency.read, emergency.manage
+safety_events.create, safety_events.read, safety_events.manage
 notifications.read, notifications.manage
 reports.read
 audit_logs.read
@@ -183,8 +184,11 @@ when those modules ship)
 | camera.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
 | ai_events.review | – | – | ✓ | – | read | – | – | ✓ | never |
 | incidents.* | – | ✓ | ✓ | – | ✓ | – | – | ✓ | never |
-| emergency.create | – | – | – | – | – | ✓ | ✓ | – | – |
+| emergency.create | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
 | emergency.read | – | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | never |
+| emergency.manage | – | ✓ | ✓ | ✓ | ✓ | – | – | – | never |
+| safety_events.create | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | never |
+| safety_events.read/manage | – | ✓ | ✓ | ✓ | ✓ | – | – | read | never |
 | reports.read | – | ✓ | ✓ | ✓ | ✓ | – | – | – | never |
 | audit_logs.read | platform | ✓ | – | – | ✓ | – | – | – | never |
 
@@ -197,6 +201,23 @@ the same class of gap previously found and fixed for `TRANSPORT_MANAGER`
 (`buses.read`, Step 3) and `TRANSPORT_ADMIN` (`notifications.read`,
 Step 9). `DRIVER`/`BUS_ATTENDANT` remain deliberately ungranted — operating
 a bus is not, by itself, a reason to see its camera inventory.
+
+`emergency.create` for `SCHOOL_ADMIN`/`PRINCIPAL`/`TRANSPORT_ADMIN`/
+`TRANSPORT_MANAGER`, `emergency.manage` (new), and
+`safety_events.create`/`.read`/`.manage` (new) were all added in Phase 2
+Step 12 — see [ADR 0019](adr/0019-safety-events-and-emergency-management.md)
+Decision 4 for the full reasoning, including the specific gap this closed
+(`emergency.create` had never been granted to any operational staff role,
+despite the step's own spec listing "authorized staff" alongside
+driver/attendant as able to trigger an emergency directly).
+`safety_events.create`/`emergency.create` are the narrow permissions
+DRIVER/BUS_ATTENDANT hold — own currently-assigned trip/bus only, enforced
+in `SafetyEventsService`/`EmergenciesService`, never by the permission
+grant alone (the same "gate by the shared weak permission, authorize for
+real in the service" pattern already used for `trips.read` on
+`/trips/:id/start`). Neither role ever holds `.read`/`.manage` for either
+domain — triggering an alert is not the same capability as browsing or
+triaging every other one in the school.
 
 "Never" entries above are not merely unassigned permissions — the parent namespace's
 controllers (`/parent/*`) do not accept a permission grant for camera/ai/incident
@@ -548,6 +569,18 @@ relationship-based, staff access is RBAC-based.
   admin's, and there is no endpoint that lists another user's
   notifications.
 
+**Recipient resolution never trusts client input.** Every notification is
+created by `NotificationsService` from a `DomainEvent` payload that
+originates entirely server-side (the authenticated principal who triggered
+the underlying board/dropoff/trip-lifecycle action, or the system's own
+GPS freshness check) — no domain event field, and therefore no
+notification's `recipientId`, is ever taken from a request body. Recipient
+sets are computed from existing, already-verified relationships:
+`ParentStudent.verified = true` rows for child-scoped events, and role-key
+membership (`SCHOOL_ADMIN`/`PRINCIPAL`/`TRANSPORT_ADMIN`/
+`TRANSPORT_MANAGER`) for operational staff alerts — never "every user in
+the school." See [ADR 0016](adr/0016-notifications-and-alerts.md).
+
 ### 5.9 Camera Authorization (Phase 2 Step 11)
 
 `CamerasController` is staff-only (`@RequireAudience('STAFF')`) and gated
@@ -565,17 +598,32 @@ foreign `busId`. See §6 for the specific IDOR/RBAC test scenarios and
 [ADR 0018](adr/0018-camera-device-management-foundation.md) for why no
 parent-facing camera capability exists anywhere in this codebase.
 
-**Recipient resolution never trusts client input.** Every notification is
-created by `NotificationsService` from a `DomainEvent` payload that
-originates entirely server-side (the authenticated principal who triggered
-the underlying board/dropoff/trip-lifecycle action, or the system's own
-GPS freshness check) — no domain event field, and therefore no
-notification's `recipientId`, is ever taken from a request body. Recipient
-sets are computed from existing, already-verified relationships:
-`ParentStudent.verified = true` rows for child-scoped events, and role-key
-membership (`SCHOOL_ADMIN`/`PRINCIPAL`/`TRANSPORT_ADMIN`/
-`TRANSPORT_MANAGER`) for operational staff alerts — never "every user in
-the school." See [ADR 0016](adr/0016-notifications-and-alerts.md).
+### 5.10 Safety Event / Emergency Authorization (Phase 2 Step 12)
+
+Both `SafetyEventsController` and `EmergenciesController` are staff-only
+(`@RequireAudience('STAFF')`) — there is no parent audience on either
+controller, no safety/emergency field on any parent DTO, and no
+safety/emergency event on the parent realtime channel (§5.7's
+`ParentGateway` was not touched by this step at all). `POST` (create/
+trigger) on both is gated by the narrowest permission every eligible
+caller holds (`safety_events.create`/`emergency.create` — see §2.3); every
+lifecycle transition requires the stronger `.manage` permission, which
+DRIVER/BUS_ATTENDANT never hold.
+
+Ownership resolution is profile-based, reusing `GpsService.resolveGpsScope`/
+`TripsService.assertCanOperate`'s exact pattern (§5.4/§5.6): if the
+authenticated principal has a `Driver` or `Attendant` profile, they are
+*always* scoped to their own currently-`IN_PROGRESS` trip inside
+`SafetyEventsService`/`EmergenciesService` — a supplied `busId`/`tripId`
+that doesn't match it is `403`; having no current trip and supplying
+neither is `400`, never a guess. A staff principal with no such profile may
+reference any bus/trip/camera in their own tenant (verified, `404` if
+foreign) or none at all. Every lookup by id is tenant-scoped via
+`runInTenantContext`, so a cross-tenant safety-event/emergency id is `404`,
+never `403`. `createdBy`/`initiatedBy`/`schoolId`/`source` are never
+accepted from the client on any route. See §6 for the specific IDOR/RBAC/
+state-machine test scenarios and
+[ADR 0019](adr/0019-safety-events-and-emergency-management.md).
 
 ## 6. Testing Requirements
 
@@ -598,6 +646,33 @@ Mandatory automated coverage before a module is considered done (ties to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 2 Step 12** (`apps/api/test/safety.e2e-spec.ts`, 35
+tests): full SafetyEvent CRUD/lifecycle (create with full staff scope,
+driver/attendant auto-scoped-to-own-trip creation, 400 with no active trip
+and nothing supplied, 403 for a foreign bus/trip, acknowledge/dismiss/
+resolve with their exact allowed-from-status sets, rejecting a repeat
+transition); escalation (creates a linked `ACTIVE` emergency, the source
+event becomes terminal `ESCALATED`, direct acknowledge/resolve on the
+escalated event both rejected, and — the one system-driven transition —
+resolving the resulting emergency flips the source event to `RESOLVED`
+automatically, verified via a fresh `GET`); Emergency trigger/lifecycle
+(default `CRITICAL` severity, driver auto-scope and 400/403 mirrors of the
+above, staff triggering with no bus/trip at all, full ACTIVE→ACKNOWLEDGED→
+action-added→RESOLVED with history preserved afterward, `CANCELLED` as a
+distinct terminal state, rejecting any transition out of a terminal state);
+RBAC (`DRIVER`/`BUS_ATTENDANT` denied every management action despite
+holding `.create`, parent denied every route on both controllers);
+cross-tenant IDOR (404 for cross-school read/acknowledge/escalate on
+safety events, cross-school bus reference on creation, cross-school
+read/acknowledge on emergencies); audit (`SAFETY_EVENT_CREATED`/
+`_ESCALATED`, `EMERGENCY_CREATED`/`_RESOLVED`); notification integration
+(a `CRITICAL` safety event notifies staff, a `LOW` one does not; triggering
+an emergency notifies staff); a direct-`psql`-as-`app_user` RLS
+re-verification for both tables; and `/realtime/safety` Socket.IO
+authorization with a real `socket.io-client` (authorized staff receives
+both event types live, a parent/no-token/`DRIVER` connection is rejected,
+a School B socket never receives School A's events).
 
 **Covered as of Phase 2 Step 11** (`apps/api/test/cameras.e2e-spec.ts` — no
 separate unit specs were added for the camera module itself; the
@@ -681,6 +756,18 @@ re-verification described above.
   no value meaning "a real, live feed is available" (only `NOT_CONFIGURED` and
   the explicitly-dev/test-only `SIMULATED`) — there is no real stream provider
   in this phase for a compromised or buggy frontend to misrepresent.
+- A false "emergency service was contacted" record (Phase 2 Step 12) →
+  `EmergencyAction.actionType = 'CONTACTED_EMERGENCY_SERVICE'` can only ever
+  mean an operator logged having made contact themselves; there is no
+  external emergency-service integration anywhere in this codebase for a
+  compromised or buggy client to falsely claim was invoked automatically.
+- A driver/attendant abusing the emergency-button/safety-event endpoints to
+  affect another bus/trip or browse the school-wide dashboard → structurally
+  prevented, not just a permission check: neither role is ever granted
+  `safety_events.read`/`.manage` or `emergency.read`/`.manage`, and their
+  `.create` grant is scoped inside the service to their own currently
+  in-progress trip only (§5.10) — there is no code path, correct or buggy,
+  by which holding `.create` alone could reach another bus's data.
 
 ## 8. Rate Limiting
 

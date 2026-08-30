@@ -58,6 +58,25 @@ export const PERMISSION_KEYS = [
   'incidents.resolve',
   'emergency.create',
   'emergency.read',
+  // Phase 2 Step 12: `emergency.manage` (lifecycle transitions —
+  // acknowledge/add response action/resolve/cancel), a deliberate sibling
+  // of the existing `emergency.create`/`emergency.read` pair rather than a
+  // new pluralized `emergencies.*` scheme — this domain already has an
+  // established singular naming convention (matching `gps.read`,
+  // `attendance.read`/`attendance.manage`) that a new key should follow,
+  // not compete with.
+  'emergency.manage',
+  // Safety events are a new-this-step concept, distinct from the
+  // pre-existing `incidents.*` keys (reserved for a human-adjudicated
+  // incident lifecycle expected to be built from future `ai_events`, per
+  // docs/architecture.md's module table) — reusing `incidents.*` here would
+  // blur that still-unbuilt pipeline. `safety_events.create` is the narrow
+  // permission DRIVER/BUS_ATTENDANT hold (their own trip/bus only, enforced
+  // in SafetyEventsService); `safety_events.read`/`safety_events.manage`
+  // are the broader staff dashboard/triage capabilities.
+  'safety_events.create',
+  'safety_events.read',
+  'safety_events.manage',
   'notifications.read',
   'notifications.manage',
   'reports.read',
@@ -132,6 +151,17 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'incidents.read',
     'incidents.resolve',
     'emergency.read',
+    // Phase 2 Step 12 — same reasoning as camera.read/manage above: this
+    // school's own top operational authority should have full safety-event/
+    // emergency triage capability, not just read visibility. `emergency.create`
+    // lets staff trigger an emergency directly (not only escalate one from a
+    // SafetyEvent), same "authorized staff" capability the step's spec lists
+    // alongside driver/attendant.
+    'emergency.create',
+    'emergency.manage',
+    'safety_events.create',
+    'safety_events.read',
+    'safety_events.manage',
     'notifications.read',
     'notifications.manage',
     'reports.read',
@@ -158,6 +188,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'incidents.read',
     'incidents.resolve',
     'emergency.read',
+    'emergency.create',
+    'emergency.manage',
+    'safety_events.create',
+    'safety_events.read',
+    'safety_events.manage',
     'reports.read',
     'device_health.read',
     // Operational alert recipient (GPS_STALE/GPS_OFFLINE/TRIP_CANCELLED/
@@ -183,6 +218,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'gps.read',
     'camera.read',
     'emergency.read',
+    'emergency.create',
+    'emergency.manage',
+    'safety_events.create',
+    'safety_events.read',
+    'safety_events.manage',
     'reports.read',
     'device_health.read',
     // Operational alert recipient — see the TRANSPORT_ADMIN note above.
@@ -206,6 +246,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'ai_events.read',
     'incidents.read',
     'emergency.read',
+    'emergency.create',
+    'emergency.manage',
+    'safety_events.create',
+    'safety_events.read',
+    'safety_events.manage',
     'reports.read',
     'audit_logs.read',
     // Operational alert recipient — see the TRANSPORT_ADMIN note above.
@@ -220,13 +265,19 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
   // (Phase 0's seed granted `trips.manage` here; removed in Phase 1 Step 5
   // while reviewing existing grants, the same kind of gap found and fixed
   // for TRANSPORT_MANAGER in Phase 1 Step 3.)
-  DRIVER: ['trips.read', 'gps.read', 'emergency.create'],
+  // `safety_events.create` added in Phase 2 Step 12 — same "own trip only"
+  // scoping philosophy as `emergency.create` (enforced in
+  // SafetyEventsService, not by the permission grant alone): a driver can
+  // report a MANUAL_ALERT/DRIVER_ALERT for their own currently-assigned
+  // trip/bus, never school-wide, and never `safety_events.read`/`.manage`
+  // (no browsing other events, no triage authority).
+  DRIVER: ['trips.read', 'gps.read', 'emergency.create', 'safety_events.create'],
   // `attendance.read` added in Phase 1 Step 6 while reviewing existing
   // grants — an attendant who manages attendance obviously needs to read
   // the manifest/current state they're managing too (§2.3's matrix already
   // documents "own trip only" for this role; the seed had simply omitted
   // the read grant that scoping depends on).
-  BUS_ATTENDANT: ['trips.read', 'attendance.read', 'attendance.manage', 'gps.read', 'emergency.create'],
+  BUS_ATTENDANT: ['trips.read', 'attendance.read', 'attendance.manage', 'gps.read', 'emergency.create', 'safety_events.create'],
   SECURITY: [
     'gps.read',
     'camera.read',
@@ -236,6 +287,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'incidents.read',
     'incidents.resolve',
     'emergency.read',
+    // Read-only — fits SECURITY's existing broad safety-oversight-without-
+    // management posture (camera.read/emergency.read/incidents.read, never
+    // the corresponding manage grants).
+    'safety_events.read',
   ],
   PARENT: [],
 } as const;

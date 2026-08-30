@@ -752,6 +752,121 @@ async function seedDemoSchool() {
     },
   });
 
+  // Safety events + emergency management (Phase 2 Step 12) — a small,
+  // deliberately varied set: one NEW (untouched), one ACKNOWLEDGED, one
+  // RESOLVED safety event; one ACTIVE and one RESOLVED emergency (the
+  // latter escalated from a safety event, with a short append-only
+  // response-action history). No fake AI events, no fake recordings, no
+  // fake external-service contact — see docs/adr/0019.
+  await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      type: 'DOOR_OPEN',
+      severity: 'LOW',
+      status: 'NEW',
+      source: 'HUMAN_OPERATOR',
+      occurredAt: new Date(),
+      description: 'Seed data: door sensor reported briefly open while the bus was stationary.',
+      createdBy: schoolAdmin.id,
+    },
+  });
+  await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      type: 'DRIVER_ALERT',
+      severity: 'MEDIUM',
+      status: 'ACKNOWLEDGED',
+      source: 'DRIVER',
+      occurredAt: new Date(),
+      description: 'Seed data: driver reported a minor disruption on board, now under control.',
+      createdBy: schoolAdmin.id,
+      reviewedBy: schoolAdmin.id,
+      reviewedAt: new Date(),
+    },
+  });
+  await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      type: 'MEDICAL',
+      severity: 'HIGH',
+      status: 'RESOLVED',
+      source: 'ATTENDANT',
+      occurredAt: new Date(`${relativeDate(-1)}T08:15:00Z`),
+      description: 'Seed data: student felt unwell; attendant administered first aid.',
+      createdBy: schoolAdmin.id,
+      reviewedBy: schoolAdmin.id,
+      reviewedAt: new Date(`${relativeDate(-1)}T08:30:00Z`),
+      resolutionNote: 'Seed data: student recovered, parent informed by phone at pickup.',
+    },
+  });
+
+  const escalatedEvent = await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      type: 'ACCIDENT',
+      severity: 'CRITICAL',
+      status: 'ESCALATED',
+      source: 'DRIVER',
+      occurredAt: new Date(`${relativeDate(-2)}T07:45:00Z`),
+      description: 'Seed data: minor collision while parked; no injuries reported.',
+      createdBy: schoolAdmin.id,
+      reviewedBy: schoolAdmin.id,
+      reviewedAt: new Date(`${relativeDate(-2)}T07:50:00Z`),
+    },
+  });
+  const resolvedEmergency = await prisma.emergency.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      initiatedBy: schoolAdmin.id,
+      sourceSafetyEventId: escalatedEvent.id,
+      status: 'RESOLVED',
+      severity: 'CRITICAL',
+      reason: 'Escalated from safety event: ACCIDENT',
+      startedAt: new Date(`${relativeDate(-2)}T07:50:00Z`),
+      acknowledgedAt: new Date(`${relativeDate(-2)}T07:52:00Z`),
+      resolvedAt: new Date(`${relativeDate(-2)}T08:30:00Z`),
+      resolvedBy: schoolAdmin.id,
+      resolutionNote: 'Seed data: bus inspected and cleared to resume service; no injuries.',
+    },
+  });
+  await prisma.emergencyAction.create({
+    data: { schoolId: school.id, emergencyId: resolvedEmergency.id, actorId: schoolAdmin.id, actionType: 'ACKNOWLEDGED' },
+  });
+  await prisma.emergencyAction.create({
+    data: {
+      schoolId: school.id,
+      emergencyId: resolvedEmergency.id,
+      actorId: schoolAdmin.id,
+      actionType: 'CONTACTED_SCHOOL',
+      note: 'Seed data: notified the school office.',
+    },
+  });
+  await prisma.emergencyAction.create({
+    data: { schoolId: school.id, emergencyId: resolvedEmergency.id, actorId: schoolAdmin.id, actionType: 'RESOLVED' },
+  });
+
+  // A currently-ACTIVE emergency, directly triggered (no source safety
+  // event) — the "something is happening right now" fixture for the
+  // dashboard's default view.
+  await prisma.emergency.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      initiatedBy: schoolAdmin.id,
+      status: 'ACTIVE',
+      severity: 'CRITICAL',
+      reason: 'Seed data: emergency button pressed on board.',
+    },
+  });
+
   return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };
 }
 
@@ -985,6 +1100,24 @@ async function seedSchoolB() {
     },
   });
   await prisma.tripStudent.update({ where: { id: tripBEntry.id }, data: { currentStatus: 'BOARDED', boardedAt: tripBBoardedAt } });
+
+  // One safety event (Phase 2 Step 12) — exists solely so cross-tenant
+  // isolation has a real second-tenant row to test against, same reasoning
+  // as this school's single camera/GPS device fixtures.
+  await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      busId: busB1.id,
+      tripId: morningTripB.id,
+      type: 'MANUAL_ALERT',
+      severity: 'LOW',
+      status: 'NEW',
+      source: 'HUMAN_OPERATOR',
+      occurredAt: new Date(),
+      description: 'Seed data: routine manual note.',
+      createdBy: admin.id,
+    },
+  });
 
   return { school, students: [studentA1, studentB1], parent, admin };
 }

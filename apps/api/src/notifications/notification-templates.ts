@@ -48,4 +48,16 @@ export const NotificationTemplates: Record<NotificationEventType, (ctx: Record<s
     title: 'Bus location unavailable',
     body: `${ctx['busDisplayName']} has not reported any GPS position for a while and appears offline.`,
   }),
+  SAFETY_EVENT_CRITICAL: (ctx) => ({
+    title: 'Critical safety event reported',
+    body: `A critical ${ctx['eventTypeLabel']} safety event was reported${ctx['busDisplayName'] ? ` on ${ctx['busDisplayName']}` : ''}. Review it now.`,
+  }),
+  EMERGENCY_CREATED: (ctx) => ({
+    title: 'Emergency reported',
+    body: `An emergency was reported${ctx['busDisplayName'] ? ` on ${ctx['busDisplayName']}` : ''}. Immediate attention required.`,
+  }),
+  EMERGENCY_RESOLVED: (ctx) => ({
+    title: 'Emergency resolved',
+    body: `The emergency reported${ctx['busDisplayName'] ? ` on ${ctx['busDisplayName']}` : ''} has been marked resolved.`,
+  }),
 };

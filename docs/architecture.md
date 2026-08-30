@@ -193,10 +193,14 @@ rule (`eslint-plugin-boundaries`), not just convention.
 - **Observability**: request-id middleware, structured JSON logs (pino), and a
   `/health`, `/health/ready`, `/health/live` set of endpoints from day one.
 - **Realtime**: a separate WebSocket gateway namespace per concern —
-  `/realtime/fleet` (staff fleet tracking, Phase 1 Step 7) and
+  `/realtime/fleet` (staff fleet tracking, Phase 1 Step 7),
   `/realtime/parent` (child-scoped parent transport updates, Phase 1
-  Step 8). The two are fully isolated: a parent socket never joins a fleet/
-  bus room and a staff socket never joins a child room. `ParentGateway`
+  Step 8), and `/realtime/safety` (staff safety-event/emergency updates,
+  Phase 2 Step 12 — a separate namespace from `/realtime/fleet` because its
+  authorization check differs, `safety_events.read`/`emergency.read` rather
+  than `gps.read`). All three are fully isolated: a parent socket never
+  joins a fleet/bus/safety room, and a staff socket never joins a child
+  room. `ParentGateway`
   reacts to `GpsGateway`'s location updates via a plain in-process
   `EventEmitter` (`GpsGateway.onLocationUpdate`) rather than a second
   current-location pipeline, keeping the dependency direction one-way
@@ -213,7 +217,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
   at MVP's single-instance scale; see
   [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the
   swap-in point when horizontal scaling is real. This applies equally to
-  `/realtime/parent`.
+  `/realtime/parent` and `/realtime/safety`.
 
 ## 4. Module Boundaries — Ownership Table
 
@@ -231,6 +235,7 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `attendance` | append-only boarding/drop-off events + derived current status | trip scheduling |
 | `gps` | live + historical device telemetry | camera data |
 | `cameras` (Phase 2 Step 11) | camera identity/lifecycle/health, layered on `bus-devices`' shared device-credential mechanism — never a second, parallel device-identity table | recordings (would be `files`, once built — not yet); any streaming/AI/incident data |
+| `safety` (Phase 2 Step 12) | `SafetyEvent`/`Emergency`/`EmergencyAction` — human/operator-reported observations, triage, and the emergency-response workflow, in one module since the two are tightly coupled by escalation | AI-generated events (owned by future `ai-events`); the final human-adjudicated incident record (owned by future `incidents`); any camera footage/recording |
 | `ai-events` | AI-generated candidate events | final incident record (owned by `incidents`) |
 | `incidents` | human-adjudicated incident lifecycle | raw AI confidence internals |
 | `notifications` | templates, preferences, delivery log | the business event that triggered it |
