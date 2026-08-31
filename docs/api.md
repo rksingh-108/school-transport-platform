@@ -379,13 +379,14 @@ existing Step 12 pipeline — there is no separate "geofence alert" or
 this codebase, and no geofence/rule field on any parent DTO — see
 [privacy.md](privacy.md).
 
-### Edge AI / Computer Vision Pipeline (Phase 3 Step 14)
+### Edge AI / Computer Vision Pipeline (Phase 3 Steps 14-15)
 
 Implemented — `apps/api/src/ai-observations/`. Edge-device authentication,
-a platform-wide AI model registry, and candidate-detection ("AI
-observation") ingestion/reads. No AI → SafetyEvent promotion, no
-human-review workflow, no facial/biometric recognition — see
-[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
+a platform-wide AI model registry, candidate-detection ("AI observation")
+ingestion/reads, the human review/dismiss/promote workflow, and per-school
+AI safety policies. No facial/biometric recognition. See
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) and
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md).
 
 **Device-facing** (`@Public()`, authenticated by an `EDGE_COMPUTER`
 `BusDevice`'s opaque bearer credential — issued/rotated via the existing
@@ -405,11 +406,39 @@ Phase-0-reserved `ai_events.read` permission — see ADR 0021 Decision 10):
 | GET | `/ai-observations/:id` | |
 | GET | `/ai-observations/provider-status` | `{status: 'AI_NOT_CONFIGURED'\|'AI_READY', message}` — `AI_NOT_CONFIGURED` unless `AI_INFERENCE_PROVIDER=MOCK` is explicitly set (rejected in production, same discipline as `CAMERA_STREAM_PROVIDER`). Never implies real inference is running centrally — see ADR 0021 Decision 2. |
 
-No create/update/delete route exists for staff on `/ai-observations` — it
-is written only by the device-facing endpoint above, and there is no
-review/promote endpoint yet (Step 15). `DRIVER`/`BUS_ATTENDANT` hold no AI
-permission at all (no broad dashboard for either role); there is no
-parent-facing AI endpoint anywhere in this codebase.
+The observation itself is written only by the device-facing endpoint
+above; the three routes below are the only way its `status` ever changes,
+gated by the pre-existing, Phase-0-reserved `ai_events.review` (never a
+generic PATCH — see
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)):
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/ai-observations/:id/review` | `{reviewNote?}`. `CANDIDATE → REVIEWED` only — a lightweight "seen, still deciding" marker. |
+| POST | `/ai-observations/:id/dismiss` | `{reviewNote?}`. `{CANDIDATE, REVIEWED} → DISMISSED` (terminal) — no `SafetyEvent` is ever created. |
+| POST | `/ai-observations/:id/promote` | `{reviewNote?, severity?}`. `{CANDIDATE, REVIEWED} → PROMOTED` (terminal). Rejected (400) if the school's effective `AiSafetyPolicy` for this detection type is not `enabled`, or if the observation's `confidence` is below the policy's `minimumConfidence` — falls back to a conservative hardcoded system default when no policy row exists. Creates a linked `SafetyEvent` (`source: 'AI'`, `sourceAiObservationId` set) in the same transaction; `severity` optionally overrides the policy's `defaultSeverity`. A second concurrent promote attempt on the same observation is rejected (400) by a database unique constraint, never a duplicate `SafetyEvent`. |
+
+`DRIVER`/`BUS_ATTENDANT` hold no AI permission at all (no broad dashboard
+or review capability for either role); there is no parent-facing AI
+endpoint anywhere in this codebase.
+
+**Per-school AI safety policy** (`/ai-safety-policies`, tenant-scoped,
+gated by `ai_safety_policies.read`/`.manage` — mirrors the
+`geofences.*`/`safety_rules.*` split):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/ai-safety-policies` | `?detectionType`, `?enabled`. |
+| GET | `/ai-safety-policies/:id` | |
+| POST | `/ai-safety-policies` | `{detectionType, minimumConfidence, defaultSeverity, requiresHumanReview?}`. `(schoolId, detectionType)` unique — a duplicate is 400. Created `enabled: false`. |
+| PATCH | `/ai-safety-policies/:id` | `{minimumConfidence?, defaultSeverity?, requiresHumanReview?}` — structurally excludes `detectionType` and `enabled`. |
+| POST | `/ai-safety-policies/:id/enable` | |
+| POST | `/ai-safety-policies/:id/disable` | |
+
+A detection type with no policy row falls back to a conservative,
+hardcoded system default (see
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+Decision 5) — never "anything goes."
 
 **AI Model Registry** (`/ai-models`, platform-wide, gated by
 `platform.ai_models.read`/`.manage` — `SUPER_ADMIN` only, no school-level
@@ -429,6 +458,21 @@ There is no PATCH on `/ai-models/:id` — `name`/`version`/`provider`/
 [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
 Decision 6); only `status` transitions, and only through the dedicated
 endpoints above.
+
+### Safety Analytics (Phase 3 Step 15)
+
+Implemented — `apps/api/src/analytics/`. Read-only, aggregated-only
+operational analytics across `AIObservation`/`SafetyEvent`/`Emergency`.
+Gated by `safety_analytics.read`. See
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/analytics/safety` | `{from, to}` required, `?busId`, `?detectionType`, `?severity`. `to - from` bounded to 90 days (400 beyond that). Returns `SafetyAnalyticsDto`: a `summary` (totals, promotion/dismissal rate, average review time) plus breakdowns by detection type, model, safety-event severity, bus, emergency status, and a school-timezone-aware daily trend. Never returns raw `AIObservation`/`SafetyEvent` rows. |
+
+There is no parent-facing analytics endpoint anywhere in this codebase.
+"Promotion rate" is named exactly that, never "accuracy" — human review is
+not a scientific ground-truth evaluation.
 
 ### Parent Endpoints (dedicated namespace, minimal surface)
 
@@ -500,13 +544,13 @@ their own alerts, never another admin's.
 ## 3. Phase 2/3 Endpoint Groups (outlined, not built yet)
 
 `/cameras` (§2, Phase 2 Step 11), `/safety-events`+`/emergencies` (§2,
-Phase 2 Step 12), `/geofences`+`/safety-rules` (§2, Phase 2 Step 13), and
-`/edge-ai`+`/ai-observations`+`/ai-models` (§2, Phase 3 Step 14) are now
-built. Streaming/recording playback, camera-triggered events, and
+Phase 2 Step 12), `/geofences`+`/safety-rules` (§2, Phase 2 Step 13),
+`/edge-ai`+`/ai-observations`+`/ai-models`+`/ai-safety-policies` (§2,
+Phase 3 Steps 14-15), and `/analytics/safety` (§2, Phase 3 Step 15) are
+now built. Streaming/recording playback, camera-triggered events, and
 everything below remain outlined only:
 
-- `/ai-observations/:id/review` — an AI-observation review/promotion action, folding a candidate observation into a `SafetyEvent` — Step 15, per [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) Decision 7. `ai_events.review` is already reserved for this (granted to `TRANSPORT_ADMIN`/`SECURITY`) but unused until this endpoint exists.
-- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt concept from both `/safety-events` and `/ai-observations` (see database.md §4)
+- `/incidents`, `/incidents/:id/resolve` — `incidents.read` / `incidents.create` / `incidents.resolve` — a distinct, still-unbuilt human-adjudicated incident lifecycle, separate from both `/safety-events` and `/ai-observations` (see database.md §4)
 
 None of these are exposed to the parent namespace, ever (see
 [privacy.md](privacy.md)).
@@ -572,7 +616,7 @@ None of these are exposed to the parent namespace, ever (see
   school. No `@SubscribeMessage` handler exists, so there is no mechanism
   for a client to request a different room. Server pushes:
   ```
-  safety.event.created   — a SafetyEventDto, on POST /safety-events or a fired operational safety rule (Phase 2 Step 13)
+  safety.event.created   — a SafetyEventDto, on POST /safety-events, a fired operational safety rule (Phase 2 Step 13), or a promoted AI observation (Phase 3 Step 15)
   safety.event.updated   — a SafetyEventDto, on any lifecycle transition
   emergency.created      — an EmergencyDto, on POST /emergencies or an escalation
   emergency.updated      — an EmergencyDto, on any lifecycle transition or a new response action
@@ -581,7 +625,11 @@ None of these are exposed to the parent namespace, ever (see
   fired geofence/route-deviation/speed/stop rule pushes through this exact
   same `safety.event.created` payload — no second realtime channel was
   added for operational safety rules; see
-  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md).
+  [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md). An
+  AI-promoted event (`source: 'AI'`, `sourceAiObservationId` set,
+  `createdBy` the reviewer) pushes through the identical payload shape too
+  — see [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+  Decision 9.
   See [ADR 0019](adr/0019-safety-events-and-emergency-management.md).
 - **`/realtime/ai-observations` (Socket.IO namespace, staff only —
   implemented Phase 3 Step 14)**: a separate namespace from
@@ -596,9 +644,13 @@ None of these are exposed to the parent namespace, ever (see
   never once per raw inference frame:
   ```
   ai.observation.created  — an AIObservationDto, on a genuinely new candidate observation
-  ai.observation.updated  — an AIObservationDto, when a repeated detection aggregates into an existing one within its dedup window
+  ai.observation.updated  — an AIObservationDto, when a repeated detection aggregates into an existing one within its dedup window, or when review()/dismiss()/promote() (Phase 3 Step 15) changes its status
   ```
-  See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
+  A `promote()` call additionally pushes the resulting `SafetyEvent` through
+  the EXISTING `/realtime/safety` `safety.event.created` — not a second
+  event on this namespace and not a bridge between the two; see
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+  Decision 9. See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
 - `/ws/ops` and `/ws/tracking` above were this doc's original Phase 0
   outline names; the implemented namespace/event names differ
   (`/realtime/fleet`, `/realtime/parent`, `/realtime/safety`,

@@ -315,13 +315,55 @@ surface):
    codebase entirely), any AI → SafetyEvent/Emergency promotion or
    human-review workflow, per-school severity mapping, `incidents` linkage,
    and any facial/behavioral/identity recognition.
-2. AI observation review/promotion workflow (`AIObservation` →
-   human-reviewed → `SafetyEvent`) + linkage into `incidents` — Step 15.
-3. Per-school severity mapping configuration for AI-derived events — Step
-   15 or later.
-4. Real on-edge model deployment/validation against actual hardware
-   partners — the architecture (edge-first, normalized-result-only) is in
-   place per Step 14; no physical device integration has been attempted.
+2. **AI observation review, SafetyEvent linkage, and safety analytics.
+   Done, Step 15 — the final planned implementation step** — extends
+   `AiObservationsModule` with the human review workflow
+   (`POST /ai-observations/:id/{review,dismiss,promote}` — dedicated
+   state-transition endpoints, never a generic PATCH) and adds two new
+   pieces: a tenant-scoped `AiSafetyPolicy` (per-school, per-detection-type
+   `enabled`/`minimumConfidence`/`defaultSeverity`, falling back to a
+   conservative hardcoded system default when unconfigured — non-hazard
+   types like `PERSON_DETECTED` disabled by default) and a new
+   `AnalyticsModule` (`apps/api/src/analytics/`, `GET /analytics/safety`,
+   read-only aggregated counts/breakdowns/daily-trend across
+   `AIObservation`/`SafetyEvent`/`Emergency`, tenant-scoped, bounded to a
+   90-day range, school-timezone-aware). Promoting an observation creates a
+   real `SafetyEvent` (`source: 'AI'` — the value that enum was explicitly
+   reserved for since Phase 2 Step 12 — `sourceAiObservationId` set,
+   unique, `createdBy` the reviewing staff member) through the EXISTING
+   Step 12 `SafetyEventsService`/notification/`/realtime/safety`
+   pipeline — no second alert system, no automatic Emergency creation
+   (escalation stays the existing explicit human action). A database
+   unique constraint (`SafetyEvent.sourceAiObservationId`) guarantees
+   promotion's concurrency/idempotency — two simultaneous promote attempts
+   on the same observation can never both succeed. Detection-type →
+   SafetyEvent-type mapping is a fixed, documented, hardcoded table — no
+   new SafetyEvent types were invented. See
+   [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md).
+   Staff UI: `/dashboard/ai-review` (review queue with
+   review/dismiss/promote actions), `/dashboard/ai-safety-policies`
+   (policy CRUD+enable/disable), `/dashboard/safety-analytics` (summary
+   cards, breakdowns, daily trend — no chart library, plain CSS bars);
+   the existing `/dashboard/ai-observations/:id` and
+   `/dashboard/safety-events/:id` pages were extended (not replaced) to
+   show/cross-link the review outcome and AI origin respectively. Tests: 5
+   unit tests (detection-type mapping, system-default policy conservatism)
+   plus 26 e2e tests (full state machine, promotion policy gating,
+   concurrency/idempotency, RBAC, cross-tenant IDOR, policy CRUD,
+   notification integration, realtime, analytics, RLS) — confirmed both in
+   the e2e suite and live against the running server. **Not done**
+   (explicitly out of scope for this final step, per its own boundary):
+   any facial/behavioral/identity recognition, automatic Emergency
+   creation, real on-edge model deployment/validation against physical
+   hardware partners, a separate `apps/ai-service` (inference remains the
+   edge device's own concern), and a route-level analytics breakdown
+   (bus-level was judged sufficient; a deliberate, documented scope trim,
+   not a technical limitation).
+
+**This completes all 15 planned implementation steps across Phases 1-3.**
+No further phase or step is currently planned; any Phase 4 work (see
+below) would be a new, separately-scoped decision, not a continuation of
+this roadmap.
 
 ## Phase 4 — Enterprise/Scale
 1. Advanced analytics/reporting.

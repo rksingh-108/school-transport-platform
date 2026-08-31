@@ -45,7 +45,8 @@ requirements this document does not attempt to interpret authoritatively.
 | Safety events & emergencies (Phase 2 Step 12) | Human operator/driver/attendant, own-trip-scoped for the latter two; system-generated for a fired operational safety rule (Phase 2 Step 13) | `safety_events.*`/`emergency.*` roles only; **never parents** | Never purged/hard-deleted — operational history, see §4 |
 | Geofences & safety rules (Phase 2 Step 13) | School staff (configuration only) | `geofences.*`/`safety_rules.*` roles only; **never parents, never drivers/attendants** | Geofences never hard-deleted once referenced (terminal `ARCHIVED` status); safety rules kept indefinitely, enabled/disabled only. Transient debounce/cooldown state lives in Redis only, never retained as history — see [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md) |
 | AI model registry (Phase 3 Step 14) | SUPER_ADMIN (registration only) | `platform.ai_models.read/manage`, SUPER_ADMIN only; **never school staff, never parents** | Platform-wide, not per-school; version rows never mutated/deleted, only status-transitioned — see [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) |
-| AI observations (Phase 3 Step 14) | Authenticated edge device (`EDGE_COMPUTER`), one per detected event, deduplicated within a time window | `ai_events.read` roles only; **never parents, never drivers/attendants** | No retention/purge job yet — same not-yet-decided state as GPS telemetry (see §4). No `SafetyEvent` is ever auto-created from one (Step 15's job) |
+| AI observations (Phase 3 Steps 14-15) | Authenticated edge device (`EDGE_COMPUTER`), one per detected event, deduplicated within a time window | `ai_events.read` (view) / `ai_events.review` (review/dismiss/promote) roles only; **never parents, never drivers/attendants** | No retention/purge job yet — same not-yet-decided state as GPS telemetry (see §4). A `SafetyEvent` is created from one only via an explicit, authenticated staff promotion — never automatically |
+| AI safety policies (Phase 3 Step 15) | School staff (configuration only) | `ai_safety_policies.*` roles only; **never parents, never drivers/attendants** | Kept indefinitely, enabled/disabled only — same lifecycle discipline as `safety_rules` |
 | Notifications (Phase 1 Step 9) | System (derived from the events above) | The one addressed recipient only — a specific parent or a specific staff member, never a school-wide broadcast list | Not purged yet — see the implementation-status note below |
 | Audit logs | System | `audit_logs.read` roles only | Long retention (compliance), append-only |
 
@@ -198,12 +199,20 @@ from any parent-authenticated session, not merely unlinked in the parent UI:
   pre-existing safe location summary, unchanged by this step (see
   [ADR 0020](adr/0020-geofencing-and-operational-safety-rules.md)).
 - AI-generated observations, detection types, confidence scores, model
-  metadata, or camera-frame/edge-device internals of any kind (Phase 3
-  Step 14) — no parent-audience route or DTO field exists for
-  `AIObservation`/`AIModel`, and no AI event is ever pushed on the parent
-  realtime channel. A parent has no way to learn that edge-AI processing
-  exists on their child's bus at all through this system — see
-  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md).
+  metadata, review decisions/notes, AI safety policy configuration, safety
+  analytics, or camera-frame/edge-device internals of any kind (Phase 3
+  Steps 14-15) — no parent-audience route or DTO field exists for
+  `AIObservation`/`AIModel`/`AiSafetyPolicy`, and no AI event is ever
+  pushed on the parent realtime channel. A parent has no way to learn that
+  edge-AI processing exists on their child's bus at all through this
+  system — see
+  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) and
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md). Even
+  when an AI observation is promoted into a `SafetyEvent` (Step 15), that
+  `SafetyEvent` is subject to the exact same parent-invisibility boundary
+  as any other — a parent is never told the event originated from AI, and
+  never sees the source observation, its confidence, or the reviewing
+  staff member's identity.
 - Incident records or investigation notes.
 - Any other student's data, including siblings' classmates on the same bus.
 - Any other bus/route not currently carrying their verified child.
@@ -263,12 +272,15 @@ child's data" are a first-class query against `audit_logs`, not an afterthought.
 
 ## 6. AI-Specific Privacy Controls
 
-See [ai-safety.md](ai-safety.md) for the original design model and
+See [ai-safety.md](ai-safety.md) for the original design model,
 [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) for
-what Phase 3 Step 14 actually implemented (the pipeline foundation only —
-device auth, model registry, `AIObservation` ingestion/reads; no
-review/promotion workflow yet). Privacy-relevant constraints, updated to
-reflect what is real as of Step 14:
+the pipeline foundation (device auth, model registry, `AIObservation`
+ingestion/reads), and
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md) for the
+human-review/promotion workflow and safety analytics that complete this
+platform's planned AI scope. Privacy-relevant constraints, updated to
+reflect what is real as of Step 15 — the final planned implementation
+step:
 
 - **Edge inference is the only implemented path, and no raw video/frame
   ever reaches this platform.** The edge device runs inference locally and
@@ -290,28 +302,44 @@ reflect what is real as of Step 14:
 - **No evidence/snapshot storage exists.** `AIObservation.evidenceReference`
   is always `null` in this step — no clip/snapshot storage integration was
   built, and none is fabricated to look like one.
-- **Parent has zero AI-observation access.** No parent-audience route, DTO
-  field, or realtime event exists for `AIObservation`/`AIModel` anywhere —
-  see §3 below.
-- **AI observations are internal operational data**, visible only to staff
-  holding `ai_events.read` (a pre-existing, Phase-0-reserved permission —
-  see [security.md](security.md#23-default-role--permission-matrix-mvp-scope-phase-23-permissions-granted)).
+- **Parent has zero AI-observation access, including after promotion.** No
+  parent-audience route, DTO field, or realtime event exists for
+  `AIObservation`/`AIModel`/`AiSafetyPolicy` anywhere — see §3 below. When
+  a staff member promotes an observation into a `SafetyEvent`, that event
+  is exactly as invisible to parents as any other `SafetyEvent` — a
+  promoted event's AI origin, confidence, and reviewing staff member are
+  never surfaced to a parent under any circumstance.
+- **AI observations, their review, and safety analytics are internal
+  operational data**, visible only to staff holding `ai_events.read`
+  (view), `ai_events.review` (review/dismiss/promote),
+  `ai_safety_policies.*` (policy configuration), or `safety_analytics.read`
+  (aggregated trends) — all pre-existing or newly-added permissions, none
+  ever granted to `DRIVER`/`BUS_ATTENDANT`/`PARENT` (see
+  [security.md](security.md#23-default-role--permission-matrix-mvp-scope-phase-23-permissions-granted)).
   Model confidence is a statement about the model's own certainty in the
   detection, never a probability of harm, guilt, or any judgment about a
   person — this distinction is documented on the DTO itself and surfaced
-  in the staff UI, not left implicit.
-- **Retention is not yet decided** — `AIObservation` rows have no purge job
-  and no configured retention window in this step, the same
+  in the staff UI, not left implicit. Safety analytics returns aggregated
+  counts only — no endpoint returns raw observation or event rows.
+- **Retention is not yet decided** — `AIObservation`/`AiSafetyPolicy` rows
+  have no purge job and no configured retention window, the same
   not-yet-decided state GPS telemetry and other operational tables are
   already in (see §4); this remains a business/legal decision, not an
   engineering default.
-- **The human-review boundary is structural, not just planned.** No code
-  path in this step creates a `SafetyEvent` or `Emergency` from an
-  `AIObservation`, and no review/promote/dismiss endpoint exists at all —
-  every observation this step can ever produce stays `CANDIDATE` forever
-  until Step 15 adds that workflow.
+- **The human-review boundary is structural, not a policy toggle.** No
+  code path anywhere in this codebase — not the ingestion path, not a
+  confidence threshold, not a policy configuration — can create a
+  `SafetyEvent` or `Emergency` from an `AIObservation` without an
+  authenticated staff member explicitly calling
+  `POST /ai-observations/:id/promote`. `AiSafetyPolicy.requiresHumanReview`
+  is stored but not read by any code path that could act on `false` —
+  review remains unconditional regardless of its value (see
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+  Decision 4). An Emergency is never created automatically from a promoted
+  event either — escalation remains the same explicit human action
+  established in Phase 2 Step 12.
 - This section makes no legal-compliance claim — see the checklist in §7
-  below, which still applies in full to this new data category.
+  below, which still applies in full to this data category.
 
 ## 7. Compliance Checklist (⚠️ all items require legal/privacy professional review
 before production launch — this is an engineering starting point, not a compliance

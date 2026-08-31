@@ -25,6 +25,9 @@ const NAV_ITEMS = [
   { href: '/dashboard/geofences', label: 'Geofences', permission: 'geofences.read' },
   { href: '/dashboard/safety-rules', label: 'Safety Rules', permission: 'safety_rules.read' },
   { href: '/dashboard/ai-observations', label: 'AI Observations', permission: 'ai_events.read' },
+  { href: '/dashboard/ai-review', label: 'AI Review', permission: 'ai_events.review' },
+  { href: '/dashboard/ai-safety-policies', label: 'AI Safety Policies', permission: 'ai_safety_policies.read' },
+  { href: '/dashboard/safety-analytics', label: 'Safety Analytics', permission: 'safety_analytics.read' },
   { href: '/dashboard/notifications', label: 'Alerts', permission: 'notifications.read' },
 ] as const;
 

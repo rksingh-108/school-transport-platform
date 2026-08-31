@@ -769,7 +769,7 @@ create table safety_events (
   type text not null check (type in ('MANUAL_ALERT','EMERGENCY_BUTTON','CAMERA_ALERT','DRIVER_ALERT','ATTENDANT_ALERT','DOOR_OPEN','UNAUTHORIZED_ACCESS','MEDICAL','ACCIDENT','FIGHTING','SMOKE_FIRE','ROUTE_DEVIATION','GEOFENCE_ENTRY','GEOFENCE_EXIT','EXCESSIVE_SPEED','UNEXPECTED_STOP','OTHER')), -- 5 values added Phase 2 Step 13, system-generated
   severity text not null check (severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
   status text not null default 'NEW' check (status in ('NEW','ACKNOWLEDGED','DISMISSED','ESCALATED','RESOLVED')),
-  source text not null check (source in ('HUMAN_OPERATOR','DRIVER','ATTENDANT','DEVICE','CAMERA','SYSTEM')), -- no AI value yet, deliberately
+  source text not null check (source in ('HUMAN_OPERATOR','DRIVER','ATTENDANT','DEVICE','CAMERA','SYSTEM','AI')), -- AI added Phase 3 Step 15 — the value this column was reserved for since Phase 2 Step 12
   occurred_at timestamptz not null,   -- operator-reported time (may be in the past)
   detected_at timestamptz not null default now(), -- server receipt time
   description text,
@@ -778,6 +778,12 @@ create table safety_events (
   reviewed_by uuid references users(id),
   reviewed_at timestamptz,
   resolution_note text,
+  -- Phase 3 Step 15: set only by a human PROMOTE decision on an
+  -- AIObservation — never any other path. Unique: at most one SafetyEvent
+  -- can ever exist per AIObservation, the database-level guarantee behind
+  -- promotion's concurrency/idempotency — see
+  -- docs/adr/0022-ai-observation-review-and-safety-analytics.md.
+  source_ai_observation_id uuid unique references ai_observations(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -884,13 +890,16 @@ Redis-only working state, one small JSON key per `(rule, bus)` pair —
 never persisted here; see ADR 0020 Decision 3 for the recovery behavior
 if that key is lost.
 
-### `ai_models`, `ai_observations` (Phase 3 Step 14)
-See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) for
-the full design. `ai_models` is a platform-wide model registry (no
+### `ai_models`, `ai_observations`, `ai_safety_policies` (Phase 3 Steps 14-15)
+See [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md) and
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md) for the
+full design. `ai_models` is a platform-wide model registry (no
 `school_id` — a shared ML asset, not a per-tenant resource, same precedent
 as the pre-existing `permissions` table). `ai_observations` is the
-per-school candidate-detection record an authenticated edge device reports
-— deliberately NOT a `safety_events` row; that promotion is Step 15's job.
+per-school candidate-detection record an authenticated edge device
+reports. `ai_safety_policies` is the per-school, per-detection-type
+promotion policy (tenant-scoped, unlike `ai_models`) that governs whether
+and how an observation may be promoted into a `safety_events` row.
 ```sql
 create table ai_models (
   id uuid primary key default gen_random_uuid(),
@@ -918,9 +927,14 @@ create table ai_observations (
   occurred_at timestamptz not null,   -- edge-reported time
   received_at timestamptz not null default now(),  -- server receipt time — authoritative for ordering/security
   window_start timestamptz not null,  -- dedup/temporal-aggregation bucket, see the ADR
-  status text not null default 'CANDIDATE' check (status in ('CANDIDATE','REVIEWED','DISMISSED','PROMOTED')), -- only CANDIDATE is ever set this step
-  evidence_reference text,  -- always null this step — no evidence-storage integration exists; never fabricated
+  status text not null default 'CANDIDATE' check (status in ('CANDIDATE','REVIEWED','DISMISSED','PROMOTED')), -- REVIEWED/DISMISSED/PROMOTED set by the Phase 3 Step 15 review workflow
+  evidence_reference text,  -- always null — no evidence-storage integration exists; never fabricated
   metadata jsonb,  -- small, bounded (Zod-enforced) blob only
+  -- Phase 3 Step 15: set by review()/dismiss()/promote() — never by
+  -- ingestion, and never independently client-editable.
+  reviewed_by uuid references users(id),
+  reviewed_at timestamptz,
+  review_note text,
   created_at timestamptz not null default now(),
   unique (edge_device_id, camera_id, detection_type, window_start)
 );
@@ -930,12 +944,35 @@ create index on ai_observations (bus_id, occurred_at);
 create index on ai_observations (trip_id, occurred_at);
 create index on ai_observations (detection_type, occurred_at);
 create index on ai_observations (status, occurred_at);
+
+-- Phase 3 Step 15. Tenant-scoped (unlike ai_models above) — see ADR 0022
+-- Decision 4 for why promotability/confidence/severity are a per-school
+-- decision while the model artifact itself is not.
+create table ai_safety_policies (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references schools(id),
+  detection_type text not null check (detection_type in ('PERSON_DETECTED','PERSON_COUNT','OBJECT_DETECTED','FALL_DETECTED','SMOKE_DETECTED','FIRE_DETECTED','DOOR_STATE_DETECTED','UNUSUAL_MOTION')),
+  enabled boolean not null default false,  -- toggled only via /enable, /disable — never a generic PATCH
+  minimum_confidence double precision not null,  -- bounded 0.5-1.0 at the application layer
+  default_severity text not null check (default_severity in ('LOW','MEDIUM','HIGH','CRITICAL')),
+  -- Stored for schema completeness/future extensibility — NOT read by any
+  -- promotion code path in this codebase; every promotion is unconditionally
+  -- human-gated regardless of this field's value. See ADR 0022 Decision 4.
+  requires_human_review boolean not null default true,
+  created_by uuid not null references users(id),
+  updated_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (school_id, detection_type)
+);
 ```
-`cameras.edge_device_id` (nullable, FK to `bus_devices`) is the new column
-this step adds to the existing `cameras` table — which EDGE_COMPUTER device
-(if any) is assigned to process that camera's feed; see the ADR's "camera
-→ edge-device assignment" decision. No face embeddings, no biometric
-identifiers, and no `student_id` column exists anywhere in either table —
+`cameras.edge_device_id` (nullable, FK to `bus_devices`) is the column
+Phase 3 Step 14 added to the existing `cameras` table — which EDGE_COMPUTER
+device (if any) is assigned to process that camera's feed; see
+[ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)'s
+"camera → edge-device assignment" decision. No face embeddings, no
+biometric identifiers, and no `student_id` column exists anywhere in any
+of these tables —
 there is no schema shape here that could carry identity data.
 
 ### `audit_logs`

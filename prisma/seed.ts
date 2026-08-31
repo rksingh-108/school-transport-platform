@@ -1010,6 +1010,112 @@ async function seedDemoSchool(aiModels: { personDetector: { id: string; version:
     },
   });
 
+  // AI safety policies + human review workflow (Phase 3 Step 15) — see
+  // docs/adr/0022-ai-observation-review-and-safety-analytics.md. One
+  // enabled policy (FALL_DETECTED), one enabled CRITICAL policy
+  // (SMOKE_DETECTED), and one explicitly-disabled policy (PERSON_DETECTED,
+  // matching the conservative system default) so the policy UI has all
+  // three states to show. Also: one DISMISSED observation (reviewed, judged
+  // a false positive) and one PROMOTED observation with its resulting
+  // AI-sourced SafetyEvent, so the review queue/analytics/safety-event
+  // detail pages all have real data on first login. No fake emergency, no
+  // biometric/identity data.
+  await prisma.aiSafetyPolicy.create({
+    data: {
+      schoolId: school.id,
+      detectionType: 'FALL_DETECTED',
+      enabled: true,
+      minimumConfidence: 0.85,
+      defaultSeverity: 'HIGH',
+      createdBy: schoolAdmin.id,
+    },
+  });
+  await prisma.aiSafetyPolicy.create({
+    data: {
+      schoolId: school.id,
+      detectionType: 'SMOKE_DETECTED',
+      enabled: true,
+      minimumConfidence: 0.8,
+      defaultSeverity: 'CRITICAL',
+      createdBy: schoolAdmin.id,
+    },
+  });
+  await prisma.aiSafetyPolicy.create({
+    data: {
+      schoolId: school.id,
+      detectionType: 'PERSON_DETECTED',
+      enabled: false,
+      minimumConfidence: 0.9,
+      defaultSeverity: 'LOW',
+      createdBy: schoolAdmin.id,
+    },
+  });
+
+  const dismissedObservation = await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      edgeDeviceId: deviceEdgeA1.id,
+      modelId: aiModels.fallDetector.id,
+      modelVersion: aiModels.fallDetector.version,
+      detectionType: 'SMOKE_DETECTED',
+      confidence: 0.55,
+      occurredAt: new Date(aiObsNow - 20 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNow - 20 * 60 * 1000) / 30_000) * 30_000),
+    },
+  });
+  await prisma.aIObservation.update({
+    where: { id: dismissedObservation.id },
+    data: {
+      status: 'DISMISSED',
+      reviewedBy: schoolAdmin.id,
+      reviewedAt: new Date(aiObsNow - 15 * 60 * 1000),
+      reviewNote: 'False positive — dust cloud from a passing vehicle, no smoke or fire.',
+    },
+  });
+
+  const promotedObservation = await prisma.aIObservation.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      edgeDeviceId: deviceEdgeA1.id,
+      modelId: aiModels.fallDetector.id,
+      modelVersion: aiModels.fallDetector.version,
+      detectionType: 'FALL_DETECTED',
+      confidence: 0.91,
+      occurredAt: new Date(aiObsNow - 30 * 60 * 1000),
+      windowStart: new Date(Math.floor((aiObsNow - 30 * 60 * 1000) / 30_000) * 30_000),
+    },
+  });
+  await prisma.safetyEvent.create({
+    data: {
+      schoolId: school.id,
+      busId: bus.id,
+      tripId: morningTripToday.id,
+      cameraId: cameraAFront.id,
+      type: 'MEDICAL',
+      severity: 'HIGH',
+      source: 'AI',
+      occurredAt: new Date(aiObsNow - 25 * 60 * 1000),
+      description: 'Promoted from AI observation (FALL_DETECTED, 91% confidence, fall-detector 1.0.0).',
+      createdBy: schoolAdmin.id,
+      sourceAiObservationId: promotedObservation.id,
+    },
+  });
+  await prisma.aIObservation.update({
+    where: { id: promotedObservation.id },
+    data: {
+      status: 'PROMOTED',
+      reviewedBy: schoolAdmin.id,
+      reviewedAt: new Date(aiObsNow - 25 * 60 * 1000),
+      reviewNote: 'Reviewed footage — student stumbled while boarding, provided immediate assistance.',
+    },
+  });
+
   return { school, bus, route, driver, attendant, student, parent, deviceGpsA1, devGpsCredential };
 }
 
@@ -1305,6 +1411,19 @@ async function seedSchoolB(aiModels: { personDetector: { id: string; version: st
       occurredAt: new Date(aiObsNowB - 2 * 60 * 1000),
       windowStart: new Date(Math.floor((aiObsNowB - 2 * 60 * 1000) / 30_000) * 30_000),
       metadata: { count: 2 },
+    },
+  });
+
+  // One AI safety policy (Phase 3 Step 15) — cross-tenant isolation
+  // fixture, same reasoning as above.
+  await prisma.aiSafetyPolicy.create({
+    data: {
+      schoolId: school.id,
+      detectionType: 'FALL_DETECTED',
+      enabled: true,
+      minimumConfidence: 0.85,
+      defaultSeverity: 'HIGH',
+      createdBy: admin.id,
     },
   });
 

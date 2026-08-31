@@ -112,6 +112,21 @@ export const PERMISSION_KEYS = [
   // AIObservations they're permitted to read, never the registry itself.
   'platform.ai_models.read',
   'platform.ai_models.manage',
+  // Phase 3 Step 15: configuring what's promotable (per-school, per-
+  // detection-type confidence/severity policy) is a distinct, narrower-
+  // audience capability from reviewing/promoting individual observations
+  // (`ai_events.review`) — mirrors the geofences.*-vs-safety_rules.* split
+  // reasoning from Phase 2 Step 13.
+  'ai_safety_policies.read',
+  'ai_safety_policies.manage',
+  // Aggregated operational analytics across AI observations/safety events/
+  // emergencies — deliberately its own key rather than reusing `reports.read`
+  // (whose current grantees don't include SECURITY, which does have a
+  // legitimate interest in safety-specific analytics) or `ai_events.read`
+  // (analytics returns aggregates, never raw observation rows — a
+  // meaningfully different capability). See
+  // docs/adr/0022-ai-observation-review-and-safety-analytics.md.
+  'safety_analytics.read',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -176,6 +191,14 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     // granted to this school's own top operational authority, the same
     // class of gap fixed for camera.read/manage in Step 11.
     'ai_events.read',
+    // Phase 3 Step 15 — human review/promotion of AI observations into
+    // SafetyEvents, plus configuring this school's per-detection-type
+    // promotion policy: both fit the same top-operational-authority bucket
+    // as every other camera/safety-event/geofence manage grant above.
+    'ai_events.review',
+    'ai_safety_policies.read',
+    'ai_safety_policies.manage',
+    'safety_analytics.read',
     'incidents.create',
     'incidents.read',
     'incidents.resolve',
@@ -222,6 +245,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     // at all was a latent gap (review presupposes read).
     'ai_events.read',
     'ai_events.review',
+    'ai_safety_policies.read',
+    'ai_safety_policies.manage',
+    'safety_analytics.read',
     'incidents.create',
     'incidents.read',
     'incidents.resolve',
@@ -261,6 +287,13 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'camera.read',
     // Phase 3 Step 14 — read-only, same posture as camera.read above.
     'ai_events.read',
+    // Phase 3 Step 15 — a manager can review/dismiss/promote (operational,
+    // not just observational), but configuring the promotion policy itself
+    // stays TRANSPORT_ADMIN/SCHOOL_ADMIN-only, same split as geofences/
+    // safety_rules below.
+    'ai_events.review',
+    'ai_safety_policies.read',
+    'safety_analytics.read',
     'emergency.read',
     'emergency.create',
     'emergency.manage',
@@ -293,6 +326,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     // an operational task, not a principal's).
     'camera.read',
     'ai_events.read',
+    // Phase 3 Step 15 — same broad safety-oversight posture as camera.read/
+    // emergency.manage above.
+    'ai_events.review',
+    'ai_safety_policies.read',
+    'safety_analytics.read',
     'incidents.read',
     'emergency.read',
     'emergency.create',
@@ -334,6 +372,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<RoleKey, readonly Permiss
     'camera.read',
     'ai_events.read',
     'ai_events.review',
+    'ai_safety_policies.read',
+    'safety_analytics.read',
     'incidents.create',
     'incidents.read',
     'incidents.resolve',

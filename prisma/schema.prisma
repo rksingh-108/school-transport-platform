@@ -208,11 +208,15 @@ enum Severity {
   CRITICAL
 }
 
-// Who/what reported the event. AI is deliberately NOT a value here yet —
-// Phase 3's AI integration will add it (and only it) to this enum in the
-// migration that actually starts producing AI-sourced events, not before;
-// see the identical reasoning already applied to DeviceType/CAMERA_CONTROLLER
-// in Phase 1 Step 3 / Phase 2 Step 11.
+// Who/what reported the event. AI (Phase 3 Step 15) is a human-reviewed
+// promotion of an AIObservation — see SafetyEvent.sourceAiObservationId and
+// docs/adr/0022-ai-observation-review-and-safety-analytics.md. This is the
+// one value this enum was explicitly reserved for (see the historical note
+// this comment replaces); it is set ONLY by
+// SafetyEventsService.createRowFromAiObservation, never by any other path,
+// and never merely because an AIObservation's confidence was high — a
+// human's explicit POST /ai-observations/:id/promote call is always the
+// proximate cause.
 enum SafetyEventSource {
   HUMAN_OPERATOR
   DRIVER
@@ -220,6 +224,7 @@ enum SafetyEventSource {
   DEVICE
   CAMERA
   SYSTEM
+  AI
 }
 
 // NEW: created, not yet triaged. ACKNOWLEDGED: a human operator has seen it
@@ -520,6 +525,7 @@ model School {
   geofences              Geofence[]
   safetyRules            SafetyRule[]
   aiObservations         AIObservation[]
+  aiSafetyPolicies       AiSafetyPolicy[]
   drivers                Driver[]
   attendants             Attendant[]
   routes                 Route[]
@@ -579,6 +585,9 @@ model User {
   emergencyActions         EmergencyAction[]
   safetyRulesCreated       SafetyRule[]      @relation("SafetyRuleCreatedBy")
   safetyRulesUpdated       SafetyRule[]      @relation("SafetyRuleUpdatedBy")
+  aiObservationsReviewed   AIObservation[]   @relation("AIObservationReviewedBy")
+  aiSafetyPoliciesCreated  AiSafetyPolicy[]  @relation("AiSafetyPolicyCreatedBy")
+  aiSafetyPoliciesUpdated  AiSafetyPolicy[]  @relation("AiSafetyPolicyUpdatedBy")
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -861,49 +870,57 @@ model Camera {
 // already exist and already matter before AI can feed into it. See
 // ADR 0019.
 model SafetyEvent {
-  id             String            @id @default(uuid())
-  schoolId       String            @map("school_id")
+  id                    String            @id @default(uuid())
+  schoolId              String            @map("school_id")
   // All three are optional and independently nullable — a MANUAL_ALERT from
   // an operator reviewing footage after the fact may have no bus/trip
   // context at all; a DRIVER_ALERT always has both. Never a client-supplied
   // schoolId; busId/tripId/cameraId, when supplied, are always re-verified
   // against the caller's own tenant server-side (see SafetyEventsService).
-  busId          String?           @map("bus_id")
-  tripId         String?           @map("trip_id")
-  cameraId       String?           @map("camera_id")
-  type           SafetyEventType
-  severity       Severity
-  status         SafetyEventStatus @default(NEW)
-  source         SafetyEventSource
+  busId                 String?           @map("bus_id")
+  tripId                String?           @map("trip_id")
+  cameraId              String?           @map("camera_id")
+  type                  SafetyEventType
+  severity              Severity
+  status                SafetyEventStatus @default(NEW)
+  source                SafetyEventSource
   // The operator-reported/observed time (may be in the past — e.g.
   // reporting something noticed a few minutes ago), distinct from
   // detectedAt (server receipt time, always "now" at creation) — same
   // recordedAt-vs-receivedAt split already used for GPS telemetry.
-  occurredAt     DateTime          @map("occurred_at")
-  detectedAt     DateTime          @default(now()) @map("detected_at")
-  description    String?
+  occurredAt            DateTime          @map("occurred_at")
+  detectedAt            DateTime          @default(now()) @map("detected_at")
+  description           String?
   // Small, bounded, operator-entered context only — never raw video, face
   // data, or biometric identifiers (enforced by size limits at the Zod
   // layer, not just convention — see SafetyEventsService).
-  metadata       Json?
+  metadata              Json?
   // Nullable since Phase 2 Step 13: a deterministic operational rule
   // (source: SYSTEM) creates events with no human actor at all — the
   // NOT NULL constraint from Step 12 assumed every event had one, which
   // was only ever true for human/operator/driver/attendant-sourced events.
-  createdBy      String?           @map("created_by")
-  reviewedBy     String?           @map("reviewed_by")
-  reviewedAt     DateTime?         @map("reviewed_at")
-  resolutionNote String?           @map("resolution_note")
-  createdAt      DateTime          @default(now()) @map("created_at")
-  updatedAt      DateTime          @updatedAt @map("updated_at")
+  createdBy             String?           @map("created_by")
+  reviewedBy            String?           @map("reviewed_by")
+  reviewedAt            DateTime?         @map("reviewed_at")
+  resolutionNote        String?           @map("resolution_note")
+  // Set only by a human PROMOTE decision on an AIObservation (Phase 3 Step
+  // 15) — never set for any other event. @unique gives promotion its
+  // database-level idempotency guarantee: at most one SafetyEvent can ever
+  // exist per AIObservation, so two concurrent promote attempts on the same
+  // observation can never both succeed (see
+  // docs/adr/0022-ai-observation-review-and-safety-analytics.md).
+  sourceAiObservationId String?           @unique @map("source_ai_observation_id")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
 
-  school    School     @relation(fields: [schoolId], references: [id])
-  bus       Bus?       @relation(fields: [busId], references: [id])
-  trip      Trip?      @relation(fields: [tripId], references: [id])
-  camera    Camera?    @relation(fields: [cameraId], references: [id])
-  creator   User?      @relation("SafetyEventCreatedBy", fields: [createdBy], references: [id])
-  reviewer  User?      @relation("SafetyEventReviewedBy", fields: [reviewedBy], references: [id])
-  emergency Emergency?
+  school              School         @relation(fields: [schoolId], references: [id])
+  bus                 Bus?           @relation(fields: [busId], references: [id])
+  trip                Trip?          @relation(fields: [tripId], references: [id])
+  camera              Camera?        @relation(fields: [cameraId], references: [id])
+  creator             User?          @relation("SafetyEventCreatedBy", fields: [createdBy], references: [id])
+  reviewer            User?          @relation("SafetyEventReviewedBy", fields: [reviewedBy], references: [id])
+  sourceAiObservation AIObservation? @relation(fields: [sourceAiObservationId], references: [id])
+  emergency           Emergency?
 
   @@index([schoolId, occurredAt])
   @@index([schoolId, status])
@@ -1123,14 +1140,26 @@ model AIObservation {
   // null in practice (see the ADR's "raw video / evidence boundary").
   evidenceReference String?             @map("evidence_reference")
   metadata          Json?
+  // Set by review()/dismiss()/promote() — never by the ingestion path, and
+  // never client-editable independent of those three dedicated actions
+  // (Phase 3 Step 15). See docs/adr/0022-ai-observation-review-and-safety-analytics.md.
+  reviewedBy        String?             @map("reviewed_by")
+  reviewedAt        DateTime?           @map("reviewed_at")
+  reviewNote        String?             @map("review_note")
   createdAt         DateTime            @default(now()) @map("created_at")
 
-  school     School    @relation(fields: [schoolId], references: [id])
-  bus        Bus       @relation(fields: [busId], references: [id])
-  trip       Trip?     @relation(fields: [tripId], references: [id])
-  camera     Camera    @relation(fields: [cameraId], references: [id])
-  edgeDevice BusDevice @relation(fields: [edgeDeviceId], references: [id])
-  model      AIModel   @relation(fields: [modelId], references: [id])
+  school              School       @relation(fields: [schoolId], references: [id])
+  bus                 Bus          @relation(fields: [busId], references: [id])
+  trip                Trip?        @relation(fields: [tripId], references: [id])
+  camera              Camera       @relation(fields: [cameraId], references: [id])
+  edgeDevice          BusDevice    @relation(fields: [edgeDeviceId], references: [id])
+  model               AIModel      @relation(fields: [modelId], references: [id])
+  reviewer            User?        @relation("AIObservationReviewedBy", fields: [reviewedBy], references: [id])
+  // The reverse of SafetyEvent.sourceAiObservationId — null unless this
+  // observation has been promoted. No FK column lives here; SafetyEvent
+  // owns it, same "child owns the pointer" shape as
+  // SafetyEvent.emergency/Emergency.sourceSafetyEventId.
+  promotedSafetyEvent SafetyEvent?
 
   // Idempotency/temporal-aggregation key — a repeated detection of the same
   // type, from the same camera+edge device, within the same time window,
@@ -1180,6 +1209,45 @@ enum AIObservationStatus {
   REVIEWED
   DISMISSED
   PROMOTED
+}
+
+// ---------------------------------------------------------------------------
+// AI observation review + safety analytics (Phase 3 Step 15)
+// ---------------------------------------------------------------------------
+
+// Per-school, per-detection-type promotion policy. Tenant-scoped (unlike
+// the platform-wide AIModel registry) — whether a school wants
+// FALL_DETECTED promotable at all, and at what confidence bar, is a
+// school-level operational decision. `requiresHumanReview` is stored for
+// schema completeness/future extensibility but is NOT read anywhere in
+// this step's code paths — every promotion requires an explicit
+// authenticated staff action unconditionally, regardless of this field's
+// value; see docs/adr/0022-ai-observation-review-and-safety-analytics.md.
+// A missing row for a given (school, detectionType) falls back to a
+// conservative hardcoded system default (AiSafetyPolicyDefaults), never to
+// "anything goes."
+model AiSafetyPolicy {
+  id                  String          @id @default(uuid())
+  schoolId            String          @map("school_id")
+  detectionType       AIDetectionType @map("detection_type")
+  // Whether this detection type may be promoted to a SafetyEvent at all for
+  // this school — toggled only via dedicated /enable, /disable endpoints,
+  // never a generic PATCH (mirrors SafetyRule.enabled).
+  enabled             Boolean         @default(false)
+  minimumConfidence   Float           @map("minimum_confidence")
+  defaultSeverity     Severity        @map("default_severity")
+  requiresHumanReview Boolean         @default(true) @map("requires_human_review")
+  createdBy           String          @map("created_by")
+  updatedBy           String?         @map("updated_by")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  school  School @relation(fields: [schoolId], references: [id])
+  creator User   @relation("AiSafetyPolicyCreatedBy", fields: [createdBy], references: [id])
+  updater User?  @relation("AiSafetyPolicyUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@unique([schoolId, detectionType])
+  @@map("ai_safety_policies")
 }
 
 model Driver {

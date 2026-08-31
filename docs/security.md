@@ -135,6 +135,8 @@ audit_logs.read
 device_health.read
 platform.schools.read, platform.schools.create, platform.schools.manage, platform.impersonate_school
 platform.ai_models.read, platform.ai_models.manage
+ai_safety_policies.read, ai_safety_policies.manage
+safety_analytics.read
 ```
 
 ### 2.2 Enforcement — centralized, not scattered
@@ -184,7 +186,9 @@ when those modules ship)
 | gps.read | – | ✓ | ✓ | ✓ | ✓ | own bus only | own bus only | ✓ | own child's bus only, via dedicated endpoint |
 | camera.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
 | ai_events.read | – | ✓ | ✓ | read | read | – | – | read | never |
-| ai_events.review | – | – | ✓ | – | – | – | – | ✓ | never |
+| ai_events.review | – | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | never |
+| ai_safety_policies.read/manage | – | ✓ | ✓ | read | read | – | – | read | never |
+| safety_analytics.read | – | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | never |
 | platform.ai_models.read/manage | ✓ | – | – | – | – | – | – | – | never |
 | incidents.* | – | ✓ | ✓ | – | ✓ | – | – | ✓ | never |
 | emergency.create | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
@@ -253,6 +257,23 @@ all — unlike safety-events/emergencies, there is no create-only grant for
 either role, since neither ever submits an AI observation directly (only
 an authenticated edge device does, via its own device credential, never a
 staff/driver session).
+
+`ai_events.review` (Phase 3 Step 15) — also reserved since Phase 0,
+previously granted only to `TRANSPORT_ADMIN`/`SECURITY` — was extended to
+`SCHOOL_ADMIN`/`TRANSPORT_MANAGER`/`PRINCIPAL` while reviewing existing
+grants: reviewing/dismissing/promoting an AI observation is an operational
+safety-triage capability, and all three roles already hold the equivalent
+`safety_events.manage`-tier capability for every other safety-adjacent
+domain. `ai_safety_policies.read`/`.manage` (new) mirror the
+`geofences.*`/`safety_rules.*` split exactly — full read+manage for
+`SCHOOL_ADMIN`/`TRANSPORT_ADMIN`, read-only for
+`TRANSPORT_MANAGER`/`PRINCIPAL`/`SECURITY`. `safety_analytics.read` (new)
+is granted broadly to the same safety-oversight tier
+(`SCHOOL_ADMIN`/`TRANSPORT_ADMIN`/`TRANSPORT_MANAGER`/`PRINCIPAL`/`SECURITY`)
+since it returns aggregates only, never raw rows — see
+[ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+Decision 11. `DRIVER`/`BUS_ATTENDANT` hold none of the three — no broad AI
+review/policy/analytics surface for either role.
 
 "Never" entries above are not merely unassigned permissions — the parent namespace's
 controllers (`/parent/*`) do not accept a permission grant for camera/ai/incident
@@ -732,6 +753,47 @@ audience on any route in this module, no AI field on any parent DTO, and
 no AI event on the parent realtime channel. See §6 for the specific IDOR/
 RBAC/device-auth test scenarios.
 
+### 5.13 AI Observation Review, Safety Analytics, and the Promotion Boundary (Phase 3 Step 15)
+
+The three review-transition routes
+(`POST /ai-observations/:id/{review,dismiss,promote}`) are gated by
+`ai_events.review`; every lookup by id is tenant-scoped via
+`runInTenantContext`, so a cross-tenant observation id is `404`, never
+`403`. There is no code path anywhere in `AiObservationsService` that
+creates a `SafetyEvent` outside `promote()`, and `promote()` is reachable
+only through this authenticated, permission-gated endpoint — AI cannot
+reach the `safety` module on its own under any circumstance, including a
+high-confidence detection, a misconfigured policy, or an ingestion-path
+bug (see [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+Decision 1).
+
+`AiSafetyPoliciesController` (`ai_safety_policies.read`/`.manage`) follows
+the identical tenant-scoping and 404-on-cross-tenant convention as
+`SafetyRulesController` — a policy row can never be read, updated, or
+toggled by a caller outside its own school. `promote()` itself re-verifies
+the effective policy server-side on every call (never trusting a
+client-supplied "this is enabled" claim, since no such field is even
+accepted) — `severity` is the only value on the promote request body a
+caller can meaningfully change, and it is bounded to the existing
+`Severity` enum, never freeform.
+
+**Concurrency**: two simultaneous `promote()` calls on the same
+observation are resolved at the database level, not by an application
+lock — `SafetyEvent.sourceAiObservationId`'s `@unique` constraint means
+only one transaction can ever commit; the other fails cleanly with a `400`
+("already been promoted"), never a duplicated `SafetyEvent` and never a
+`500`. Verified directly in the e2e suite by firing two concurrent promote
+requests and asserting exactly one `SafetyEvent` row exists afterward.
+
+**`SafetyAnalyticsController`** (`safety_analytics.read`) runs entirely
+inside `runInTenantContext` and returns aggregates only — no route on it
+ever returns a raw `AIObservation`/`SafetyEvent` row, and the date range is
+bounded (400 beyond 90 days) so a malicious or mistaken query can never
+force an unbounded, expensive scan. There is no parent audience on any
+route in either controller, no AI-review/policy/analytics field on any
+parent DTO, and no related event on the parent realtime channel. See §6
+for the specific IDOR/RBAC/concurrency/analytics test scenarios.
+
 ## 6. Testing Requirements
 
 Mandatory automated coverage before a module is considered done (ties to
@@ -753,6 +815,36 @@ Mandatory automated coverage before a module is considered done (ties to
     safety review (field-level assertion on the DTO, not just status-code).
   - AI event review never auto-creates a `CONFIRMED_INCIDENT` without a human actor
     (Phase 3 — but the invariant is recorded here now since it's foundational).
+
+**Covered as of Phase 3 Step 15** (`apps/api/src/ai-observations/policies/ai-safety-policy.constants.spec.ts`,
+5 unit tests, plus `apps/api/test/ai-review.e2e-spec.ts`, 26 e2e tests):
+unit coverage confirming the detection-type → SafetyEvent-type mapping
+only ever produces existing types, and the hardcoded system-default
+policy is conservative (disabled by default for non-hazard detection
+types) for every detection type. E2E coverage: the full review state
+machine (`CANDIDATE → REVIEWED/DISMISSED/PROMOTED`,
+`REVIEWED → DISMISSED/PROMOTED`, and every terminal-state transition
+rejected with 400); promotion policy gating (no policy/disabled policy
+rejected, confidence below the policy minimum rejected, the created
+SafetyEvent's type/severity/source/`sourceAiObservationId`/`createdBy`
+all correct, a reviewer's severity override honored); concurrency (two
+simultaneous promote calls on the same observation — exactly one succeeds,
+exactly one SafetyEvent ever exists); RBAC
+(`TRANSPORT_MANAGER` can review/promote but not manage policies,
+`DRIVER`/parent denied review/policy/analytics entirely); cross-tenant
+IDOR (404 for a cross-school observation or policy, a forged id is 404
+never 500); AI safety policy CRUD (duplicate `(school, detectionType)`
+rejected, PATCH cannot change `detectionType`/`enabled`, enable/disable as
+the only toggle); notification integration (`CRITICAL` promotion notifies
+staff, `LOW` does not, no AI-related notification is ever addressed to a
+parent); `/realtime/safety` receiving a promoted event with the correct
+`source`/`sourceAiObservationId` via a real `socket.io-client`; safety
+analytics (aggregated counts consistent with known seeded data, the
+90-day bound rejected beyond its limit, cross-tenant isolation, never a
+raw-row field in the response); and a direct RLS check confirming
+`ai_safety_policies` tenant isolation plus the `sourceAiObservationId`
+unique constraint rejecting a second `SafetyEvent` for the same
+observation at the database level.
 
 **Covered as of Phase 3 Step 14** (`apps/api/src/ai-observations/util/observation-window.spec.ts`,
 9 unit tests, plus `apps/api/test/ai-observations.e2e-spec.ts`, 35 e2e
@@ -953,11 +1045,25 @@ re-verification described above.
   [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
   Decisions 3, 4, and 8.
 - An AI observation (even a high-confidence one) automatically escalating
-  into a safety event, emergency, or parent notification (Phase 3 Step 14)
-  → structurally impossible this step: no code path in
-  `AiObservationsService` calls into the `safety` or `notifications`
-  modules at all, and there is no review/promote endpoint yet — see
-  [ADR 0021](adr/0021-edge-ai-computer-vision-pipeline-foundation.md)
+  into a safety event, emergency, or parent notification without human
+  involvement (Phase 3 Step 15) → structurally impossible: the ingestion
+  path (`AiObservationsService.ingest()`) has zero code path into
+  `SafetyEventsService`, and `promote()` — the only route that can ever
+  create a `SafetyEvent` from an observation — exists only behind an
+  authenticated, `ai_events.review`-gated endpoint a human must explicitly
+  call. No confidence threshold, policy configuration, or detection type
+  bypasses this — see
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
+  Decision 1. An Emergency is never created directly from a promoted
+  SafetyEvent either — escalation remains the same explicit human action
+  from Phase 2 Step 12, unchanged.
+- Two staff members racing to promote the same AI observation twice
+  (Phase 3 Step 15) → mitigated at the database level, not application
+  locking: `SafetyEvent.sourceAiObservationId`'s unique constraint
+  guarantees at most one `SafetyEvent` can ever exist per observation; the
+  losing concurrent request fails cleanly with a 400, never creating a
+  duplicate — see
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md)
   Decision 7.
 
 ## 8. Rate Limiting

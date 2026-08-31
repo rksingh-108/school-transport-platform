@@ -2,14 +2,26 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from '@nes
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import type { AIObservationDto, CursorPage } from '@school-transport/shared-types';
-import type { EdgeAiHeartbeatInput, ListAiObservationsQuery, SubmitAiObservationInput } from '@school-transport/shared-schemas';
+import type {
+  DismissAiObservationInput,
+  EdgeAiHeartbeatInput,
+  ListAiObservationsQuery,
+  PromoteAiObservationInput,
+  ReviewAiObservationInput,
+  SubmitAiObservationInput,
+} from '@school-transport/shared-schemas';
 import { PrismaService } from '../database/prisma.service';
+import { AuditService } from '../common/audit/audit.service';
 import { TokenService } from '../auth/services/token.service';
 import { toCursorPage } from '../common/pagination';
 import type { AuthenticatedPrincipal } from '../auth/types/principal';
+import type { RequestMeta } from '../auth/services/auth.service';
 import type { Env } from '../config/env.schema';
+import { SafetyEventsService } from '../safety/safety-events.service';
 import type { AuthenticatedEdgeAiDevice } from './types/edge-ai-device-principal';
 import { AiObservationsGateway } from './ai-observations.gateway';
+import { AiSafetyPoliciesService } from './ai-safety-policies.service';
+import { AI_DETECTION_TO_SAFETY_EVENT_TYPE } from './policies/ai-safety-policy.constants';
 import { COMPUTER_VISION_PROVIDER, type ComputerVisionProvider, type AiProviderHealth } from './providers/computer-vision.provider';
 import { assertObservationTimestampSane, computeWindowStart, ObservationTimestampError } from './util/observation-window';
 
@@ -28,24 +40,50 @@ type ObservationRow = {
   status: string;
   evidenceReference: string | null;
   metadata: Prisma.JsonValue;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
   createdAt: Date;
   model: { name: string };
+  reviewer: { fullName: string } | null;
+  promotedSafetyEvent: { id: string } | null;
+};
+
+const OBSERVATION_INCLUDE = {
+  model: { select: { name: true } },
+  reviewer: { select: { fullName: true } },
+  promotedSafetyEvent: { select: { id: true } },
+} satisfies Prisma.AIObservationInclude;
+
+/** Only these transitions are reachable through a direct staff endpoint call — see docs/adr/0022-ai-observation-review-and-safety-analytics.md. */
+const REVIEW_TRANSITIONS: Record<string, { review: boolean; dismiss: boolean; promote: boolean }> = {
+  CANDIDATE: { review: true, dismiss: true, promote: true },
+  REVIEWED: { review: false, dismiss: true, promote: true },
+  DISMISSED: { review: false, dismiss: false, promote: false },
+  PROMOTED: { review: false, dismiss: false, promote: false },
 };
 
 /**
  * Edge-AI device authentication, observation ingestion (dedup/temporal
- * aggregation, timestamp sanity), and staff-facing read access (Phase 3
- * Step 14). See docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md.
- * Deliberately does NOT create a SafetyEvent or Emergency from any
- * observation — that boundary belongs to Step 15.
+ * aggregation, timestamp sanity), staff-facing reads, and the human
+ * review/promotion workflow (Phase 3 Step 14 + Step 15). See
+ * docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md and
+ * docs/adr/0022-ai-observation-review-and-safety-analytics.md. Never
+ * creates a SafetyEvent automatically — `promote()` is reachable only
+ * through an authenticated staff member's explicit
+ * `POST /ai-observations/:id/promote` call, and never from the ingestion
+ * path itself.
  */
 @Injectable()
 export class AiObservationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly auditService: AuditService,
     private readonly config: ConfigService<Env, true>,
     private readonly gateway: AiObservationsGateway,
+    private readonly policiesService: AiSafetyPoliciesService,
+    private readonly safetyEventsService: SafetyEventsService,
     @Inject(COMPUTER_VISION_PROVIDER) private readonly provider: ComputerVisionProvider,
   ) {}
 
@@ -171,7 +209,7 @@ export class AiObservationsService {
             windowStart,
             metadata,
           },
-          include: { model: { select: { name: true } } },
+          include: OBSERVATION_INCLUDE,
         }),
       );
     } catch (err) {
@@ -192,7 +230,7 @@ export class AiObservationsService {
               },
             },
             data: { confidence: input.confidence, occurredAt, receivedAt: now, tripId: activeTrip?.id ?? null, metadata },
-            include: { model: { select: { name: true } } },
+            include: OBSERVATION_INCLUDE,
           }),
         );
       } else {
@@ -231,7 +269,7 @@ export class AiObservationsService {
               ? { gte: query.from ? new Date(query.from) : undefined, lte: query.to ? new Date(query.to) : undefined }
               : undefined,
         },
-        include: { model: { select: { name: true } } },
+        include: OBSERVATION_INCLUDE,
         orderBy: { occurredAt: 'desc' },
         take: query.limit + 1,
         ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
@@ -243,7 +281,7 @@ export class AiObservationsService {
 
   async get(principal: AuthenticatedPrincipal, id: string): Promise<AIObservationDto> {
     const observation = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
-      tx.aIObservation.findFirst({ where: { id }, include: { model: { select: { name: true } } } }),
+      tx.aIObservation.findFirst({ where: { id }, include: OBSERVATION_INCLUDE }),
     );
     if (!observation) throw new NotFoundException();
     return this.toDto(observation);
@@ -251,6 +289,151 @@ export class AiObservationsService {
 
   getProviderHealth(): AiProviderHealth {
     return this.provider.getHealth();
+  }
+
+  // ---------------------------------------------------------------------
+  // Human review workflow (Phase 3 Step 15) — see
+  // docs/adr/0022-ai-observation-review-and-safety-analytics.md. Three
+  // dedicated endpoints, never a generic PATCH; the original AI detection
+  // (model/modelVersion/confidence/occurredAt/cameraId/edgeDeviceId) is
+  // never mutated by any of them.
+  // ---------------------------------------------------------------------
+
+  /** CANDIDATE → REVIEWED — a lightweight "seen, still deciding" marker. */
+  async review(principal: AuthenticatedPrincipal, id: string, input: ReviewAiObservationInput, meta: RequestMeta): Promise<AIObservationDto> {
+    const existing = await this.getOwnRow(principal, id);
+    if (!REVIEW_TRANSITIONS[existing.status]?.review) {
+      throw new BadRequestException(`Cannot review an observation with status ${existing.status}.`);
+    }
+
+    const row = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
+      tx.aIObservation.update({
+        where: { id },
+        data: { status: 'REVIEWED', reviewedBy: principal.id, reviewedAt: new Date(), reviewNote: input.reviewNote },
+        include: OBSERVATION_INCLUDE,
+      }),
+    );
+
+    await this.auditService.record(principal.schoolId, {
+      actorType: 'USER',
+      actorId: principal.id,
+      action: 'AI_OBSERVATION_REVIEWED',
+      subjectType: 'AIObservation',
+      subjectId: id,
+      requestId: meta.requestId,
+      ipAddress: meta.ip,
+    });
+
+    const dto = this.toDto(row);
+    this.gateway.emitObservationUpdated(principal.schoolId, dto);
+    return dto;
+  }
+
+  /** {CANDIDATE, REVIEWED} → DISMISSED — terminal, no SafetyEvent is ever created. */
+  async dismiss(principal: AuthenticatedPrincipal, id: string, input: DismissAiObservationInput, meta: RequestMeta): Promise<AIObservationDto> {
+    const existing = await this.getOwnRow(principal, id);
+    if (!REVIEW_TRANSITIONS[existing.status]?.dismiss) {
+      throw new BadRequestException(`Cannot dismiss an observation with status ${existing.status}.`);
+    }
+
+    const row = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
+      tx.aIObservation.update({
+        where: { id },
+        data: { status: 'DISMISSED', reviewedBy: principal.id, reviewedAt: new Date(), reviewNote: input.reviewNote },
+        include: OBSERVATION_INCLUDE,
+      }),
+    );
+
+    await this.auditService.record(principal.schoolId, {
+      actorType: 'USER',
+      actorId: principal.id,
+      action: 'AI_OBSERVATION_DISMISSED',
+      subjectType: 'AIObservation',
+      subjectId: id,
+      requestId: meta.requestId,
+      ipAddress: meta.ip,
+    });
+
+    const dto = this.toDto(row);
+    this.gateway.emitObservationUpdated(principal.schoolId, dto);
+    return dto;
+  }
+
+  /**
+   * {CANDIDATE, REVIEWED} → PROMOTED — creates the linked SafetyEvent in
+   * the SAME transaction as the status transition, so a failure anywhere
+   * (policy check, SafetyEvent insert, observation update) leaves NO
+   * partial state: either both rows change together, or neither does (see
+   * the ADR's "promotion transaction" and "failure modes" decisions).
+   * Gated by the school's effective `AiSafetyPolicy` for this detection
+   * type (falling back to a conservative system default if none is
+   * configured) — `enabled: false` or a confidence below the policy's bar
+   * rejects with 400 before anything is written. The `@unique` constraint
+   * on `SafetyEvent.sourceAiObservationId` is the database-level guarantee
+   * that two concurrent promote attempts on the same observation can never
+   * both succeed — the loser's transaction fails on a unique-violation and
+   * is surfaced as a clean 400, never a silently-duplicated SafetyEvent.
+   */
+  async promote(principal: AuthenticatedPrincipal, id: string, input: PromoteAiObservationInput, meta: RequestMeta): Promise<AIObservationDto> {
+    const existing = await this.getOwnRow(principal, id);
+    if (!REVIEW_TRANSITIONS[existing.status]?.promote) {
+      throw new BadRequestException(`Cannot promote an observation with status ${existing.status}.`);
+    }
+
+    const policy = await this.policiesService.resolveEffectivePolicy(principal.schoolId, existing.detectionType);
+    if (!policy.enabled) {
+      throw new BadRequestException(`Promotion is not enabled for ${existing.detectionType} at this school.`);
+    }
+    if (existing.confidence < policy.minimumConfidence) {
+      throw new BadRequestException(`This observation's confidence (${existing.confidence}) is below the configured minimum (${policy.minimumConfidence}) for ${existing.detectionType}.`);
+    }
+
+    const safetyEventType = AI_DETECTION_TO_SAFETY_EVENT_TYPE[existing.detectionType as keyof typeof AI_DETECTION_TO_SAFETY_EVENT_TYPE];
+    const severity = input.severity ?? policy.defaultSeverity;
+
+    let safetyEventRow!: Awaited<ReturnType<SafetyEventsService['createRowFromAiObservation']>>;
+    let observationRow!: ObservationRow;
+    try {
+      await this.prisma.runInTenantContext(principal.schoolId, async (tx) => {
+        safetyEventRow = await this.safetyEventsService.createRowFromAiObservation(tx, {
+          schoolId: principal.schoolId,
+          busId: existing.busId,
+          tripId: existing.tripId,
+          cameraId: existing.cameraId,
+          type: safetyEventType,
+          severity,
+          description: `Promoted from AI observation (${existing.detectionType}, ${(existing.confidence * 100).toFixed(0)}% confidence, ${existing.model.name} ${existing.modelVersion}).`,
+          metadata: (existing.metadata as Record<string, unknown> | null) ?? undefined,
+          createdBy: principal.id,
+          sourceAiObservationId: id,
+        });
+        observationRow = await tx.aIObservation.update({
+          where: { id },
+          data: { status: 'PROMOTED', reviewedBy: principal.id, reviewedAt: new Date(), reviewNote: input.reviewNote },
+          include: OBSERVATION_INCLUDE,
+        });
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException('This observation has already been promoted to a safety event.');
+      }
+      throw err;
+    }
+
+    await this.safetyEventsService.afterAiPromotion(principal.schoolId, principal.id, safetyEventRow, meta);
+
+    const dto = this.toDto(observationRow);
+    this.gateway.emitObservationUpdated(principal.schoolId, dto);
+    return dto;
+  }
+
+  /** Tenant-scoped existence check shared by review/dismiss/promote — 404 for a cross-tenant or nonexistent id. */
+  private async getOwnRow(principal: AuthenticatedPrincipal, id: string): Promise<ObservationRow> {
+    const row = await this.prisma.runInTenantContext(principal.schoolId, (tx) =>
+      tx.aIObservation.findFirst({ where: { id }, include: OBSERVATION_INCLUDE }),
+    );
+    if (!row) throw new NotFoundException();
+    return row;
   }
 
   private toDto(row: ObservationRow): AIObservationDto {
@@ -270,6 +453,11 @@ export class AiObservationsService {
       status: row.status as AIObservationDto['status'],
       evidenceReference: row.evidenceReference,
       metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+      reviewedBy: row.reviewedBy,
+      reviewedByName: row.reviewer?.fullName ?? null,
+      reviewedAt: row.reviewedAt?.toISOString() ?? null,
+      reviewNote: row.reviewNote,
+      safetyEventId: row.promotedSafetyEvent?.id ?? null,
       createdAt: row.createdAt.toISOString(),
     };
   }

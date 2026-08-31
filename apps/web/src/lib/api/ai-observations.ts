@@ -49,3 +49,15 @@ export interface AiProviderStatus {
 export async function getAiProviderStatus(): Promise<AiProviderStatus> {
   return apiFetch('/ai-observations/provider-status');
 }
+
+export async function reviewAiObservation(id: string, reviewNote?: string): Promise<AIObservationDto> {
+  return apiFetch(`/ai-observations/${id}/review`, { method: 'POST', body: { reviewNote } });
+}
+
+export async function dismissAiObservation(id: string, reviewNote?: string): Promise<AIObservationDto> {
+  return apiFetch(`/ai-observations/${id}/dismiss`, { method: 'POST', body: { reviewNote } });
+}
+
+export async function promoteAiObservation(id: string, input: { reviewNote?: string; severity?: string } = {}): Promise<AIObservationDto> {
+  return apiFetch(`/ai-observations/${id}/promote`, { method: 'POST', body: input });
+}

@@ -1,5 +1,15 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
-import { listAiObservationsQuerySchema, type ListAiObservationsQuery } from '@school-transport/shared-schemas';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req } from '@nestjs/common';
+import type { Request } from 'express';
+import {
+  dismissAiObservationSchema,
+  listAiObservationsQuerySchema,
+  promoteAiObservationSchema,
+  reviewAiObservationSchema,
+  type DismissAiObservationInput,
+  type ListAiObservationsQuery,
+  type PromoteAiObservationInput,
+  type ReviewAiObservationInput,
+} from '@school-transport/shared-schemas';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { RequireAudience } from '../auth/decorators/require-audience.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
@@ -8,15 +18,16 @@ import type { AuthenticatedPrincipal } from '../auth/types/principal';
 import { AiObservationsService } from './ai-observations.service';
 
 /**
- * Staff-only read access to AI observations (Phase 3 Step 14). Gated by
- * `ai_events.read` — the pre-existing permission reserved since Phase 0 for
- * exactly this concept (see architecture.md's module table and
- * docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md). No
- * create/update/delete route exists here at all: observations are written
- * only through the device-facing EdgeAiController, and no review/promote
- * endpoint exists yet — that is Step 15's job. Parents have no access to
- * any route on this controller — there is no parent-audience AI endpoint
- * anywhere in this codebase, by design.
+ * Staff-only read + human-review access to AI observations (Phase 3 Steps
+ * 14-15). Reads are gated by `ai_events.read` — the pre-existing permission
+ * reserved since Phase 0 for exactly this concept. The three review
+ * transitions are gated by `ai_events.review` — dedicated state-transition
+ * endpoints, never a generic PATCH; the original AI detection is immutable
+ * through every one of them. See
+ * docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md and
+ * docs/adr/0022-ai-observation-review-and-safety-analytics.md. Parents have
+ * no access to any route on this controller — there is no parent-audience
+ * AI endpoint anywhere in this codebase, by design.
  */
 @RequireAudience('STAFF')
 @Controller()
@@ -45,5 +56,45 @@ export class AiObservationsController {
   @Get('ai-observations/:id')
   async get(@CurrentPrincipal() principal: AuthenticatedPrincipal, @Param('id') id: string) {
     return this.aiObservationsService.get(principal, id);
+  }
+
+  @RequirePermission('ai_events.review')
+  @Post('ai-observations/:id/review')
+  @HttpCode(HttpStatus.OK)
+  async review(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(reviewAiObservationSchema)) body: ReviewAiObservationInput,
+    @Req() req: Request,
+  ) {
+    return this.aiObservationsService.review(principal, id, body, this.metaFrom(req));
+  }
+
+  @RequirePermission('ai_events.review')
+  @Post('ai-observations/:id/dismiss')
+  @HttpCode(HttpStatus.OK)
+  async dismiss(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(dismissAiObservationSchema)) body: DismissAiObservationInput,
+    @Req() req: Request,
+  ) {
+    return this.aiObservationsService.dismiss(principal, id, body, this.metaFrom(req));
+  }
+
+  @RequirePermission('ai_events.review')
+  @Post('ai-observations/:id/promote')
+  @HttpCode(HttpStatus.OK)
+  async promote(
+    @CurrentPrincipal() principal: AuthenticatedPrincipal,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(promoteAiObservationSchema)) body: PromoteAiObservationInput,
+    @Req() req: Request,
+  ) {
+    return this.aiObservationsService.promote(principal, id, body, this.metaFrom(req));
+  }
+
+  private metaFrom(req: Request) {
+    return { ip: req.ip, userAgent: req.headers['user-agent'], requestId: req.id };
   }
 }

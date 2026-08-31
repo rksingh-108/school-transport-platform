@@ -105,8 +105,9 @@ school-transport-platform/
 │   │   │   │   ├── gps/                 # telemetry ingestion + current-location state + realtime gateway — implemented Phase 1 Step 7, see ADR 0014
 │   │   │   │   ├── geofencing/          # Geofence/SafetyRule config + deterministic GPS-derived rule evaluation — implemented Phase 2 Step 13, see ADR 0020. Speed-rule handling lives here too (a SafetyRule type, not a separate module) — the originally-outlined standalone "speed-monitoring" module was never built.
 │   │   │   │   ├── cameras/             # camera inventory/lifecycle/device-auth — implemented Phase 2 Step 11, see ADR 0018
-│   │   │   │   ├── ai-observations/     # edge-AI device auth, AI model registry, AIObservation ingestion/reads — implemented Phase 3 Step 14, see ADR 0021. Supersedes the originally-outlined "ai-events" module name — same underlying concept, precise naming.
-│   │   │   │   ├── incidents/           # phase 2/3 (Step 15+)
+│   │   │   │   ├── ai-observations/     # edge-AI device auth, AI model registry, AIObservation ingestion/reads/review/promotion, and per-school AiSafetyPolicy — implemented Phase 3 Steps 14-15, see ADR 0021/ADR 0022. Supersedes the originally-outlined "ai-events" module name — same underlying concept, precise naming.
+│   │   │   │   ├── analytics/           # read-only, aggregated-only safety analytics (AI observations + safety events + emergencies) — implemented Phase 3 Step 15, see ADR 0022
+│   │   │   │   ├── incidents/           # phase 2/3, still unbuilt — a distinct, still-future human-adjudicated incident lifecycle
 │   │   │   │   ├── emergency/           # phase 2
 │   │   │   │   ├── notifications/       # domain-event-driven notifications + operational alerts — implemented Phase 1 Step 9, see ADR 0016
 │   │   │   │   ├── reports/
@@ -217,6 +218,16 @@ rule (`eslint-plugin-boundaries`), not just convention.
   [ADR 0014](adr/0014-gps-telemetry-and-realtime-tracking.md) for the
   swap-in point when horizontal scaling is real. This applies equally to
   `/realtime/parent` and `/realtime/safety`.
+  A fourth namespace, `/realtime/ai-observations` (staff-only, `ai_events.read`,
+  Phase 3 Step 14), carries only deduplicated candidate-observation events
+  (`ai.observation.created`/`.updated`) — never a raw per-frame event.
+  When a candidate is promoted into a `SafetyEvent` (Phase 3 Step 15), that
+  promotion is pushed through the EXISTING `/realtime/safety`
+  `safety.event.created` event, not a bridge into
+  `/realtime/ai-observations` — a promoted event is, from every consumer's
+  perspective, an ordinary `SafetyEvent` that happens to carry
+  `source: 'AI'`. See
+  [ADR 0022](adr/0022-ai-observation-review-and-safety-analytics.md).
 
 ## 4. Module Boundaries — Ownership Table
 
@@ -236,8 +247,9 @@ rule (`eslint-plugin-boundaries`), not just convention.
 | `cameras` (Phase 2 Step 11) | camera identity/lifecycle/health, layered on `bus-devices`' shared device-credential mechanism — never a second, parallel device-identity table | recordings (would be `files`, once built — not yet); any streaming/AI/incident data |
 | `safety` (Phase 2 Step 12) | `SafetyEvent`/`Emergency`/`EmergencyAction` — human/operator-reported observations, triage, and the emergency-response workflow, in one module since the two are tightly coupled by escalation | AI-generated events (owned by future `ai-events`); the final human-adjudicated incident record (owned by future `incidents`); any camera footage/recording |
 | `geofencing` (Phase 2 Step 13) | `Geofence`/`SafetyRule` configuration, deterministic GPS-derived rule evaluation (`OperationalSafetyService`), and transient per-(rule,bus) debounce/cooldown state in Redis | GPS ingestion itself (owned by `gps`, which calls into this module, not the reverse); the resulting `SafetyEvent` record (owned by `safety`, via `createSystemEvent`) — this module creates events through that service, never a parallel table; any AI/computer-vision detection |
-| `ai-observations` (Phase 3 Step 14) | Edge-AI device authentication (`EDGE_COMPUTER` `BusDevice` rows, layered on `bus-devices`' shared credential mechanism — same pattern as `cameras`), the platform-wide `AIModel` registry, and `AIObservation` ingestion/reads | Any AI → SafetyEvent/Emergency promotion or human-review workflow (owned by future `incidents`/Step 15); real computer-vision inference (runs on the edge device itself, outside this monolith); raw video/frame storage; facial/biometric/identity data (no schema shape here can carry it) |
-| `incidents` | human-adjudicated incident lifecycle, AI-observation review/promotion workflow (Step 15+) | raw AI confidence internals |
+| `ai-observations` (Phase 3 Steps 14-15) | Edge-AI device authentication (`EDGE_COMPUTER` `BusDevice` rows, layered on `bus-devices`' shared credential mechanism — same pattern as `cameras`), the platform-wide `AIModel` registry, `AIObservation` ingestion/reads, the human review/dismiss/promote workflow, and the tenant-scoped `AiSafetyPolicy` configuration | The `SafetyEvent`/`Emergency` records themselves (owned by `safety`, created via `SafetyEventsService.createRowFromAiObservation` — this module creates them through that service, never a parallel table); real computer-vision inference (runs on the edge device itself, outside this monolith); raw video/frame storage; facial/biometric/identity data (no schema shape here can carry it); any still-future human-adjudicated incident lifecycle |
+| `analytics` (Phase 3 Step 15) | Read-only aggregation across `AIObservation`/`SafetyEvent`/`Emergency` for `GET /analytics/safety` | Any of the underlying tables themselves — this module never writes, and a failure here can never affect ingestion, review, or safety-event creation |
+| `incidents` | human-adjudicated incident lifecycle (still unbuilt) | raw AI confidence internals |
 | `incidents` | human-adjudicated incident lifecycle | raw AI confidence internals |
 | `notifications` | templates, preferences, delivery log | the business event that triggered it |
 | `audit-logs` | immutable action log | nothing else — read/append only |

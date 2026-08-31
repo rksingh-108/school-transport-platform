@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import type { SafetyEventDto } from '@school-transport/shared-types';
 import {
@@ -84,6 +85,16 @@ function SafetyEventDetail({ initial }: { initial: SafetyEventDto }) {
           <div><dt className="font-medium">Camera</dt><dd>{event.cameraId ?? '—'}</dd></div>
         </dl>
       </div>
+
+      {event.sourceAiObservationId && (
+        <div className="rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-800">
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">AI-originated safety event</p>
+          <p className="mt-1 text-zinc-500">A staff member reviewed an AI detection and chose to promote it here.</p>
+          <Link href={`/dashboard/ai-observations/${event.sourceAiObservationId}`} className="text-zinc-600 hover:underline dark:text-zinc-400">
+            View the source AI observation →
+          </Link>
+        </div>
+      )}
 
       {event.reviewedByName && (
         <div className="rounded-md bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">

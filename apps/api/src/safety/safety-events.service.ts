@@ -28,6 +28,7 @@ type SafetyEventRow = {
   reviewedBy: string | null;
   reviewedAt: Date | null;
   resolutionNote: string | null;
+  sourceAiObservationId: string | null;
   createdAt: Date;
   updatedAt: Date;
   creator: { fullName: string } | null;
@@ -40,6 +41,19 @@ const ROW_INCLUDE = {
   reviewer: { select: { fullName: true } },
   emergency: { select: { id: true } },
 } satisfies Prisma.SafetyEventInclude;
+
+type AiPromotionParams = {
+  schoolId: string;
+  busId: string;
+  tripId: string | null;
+  cameraId: string;
+  type: SafetyEventDto['type'];
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  description: string;
+  metadata?: Record<string, unknown>;
+  createdBy: string;
+  sourceAiObservationId: string;
+};
 
 /** Only these transitions are reachable through a direct staff endpoint call — see the class docstring below and ADR 0019. */
 const MANUAL_TRANSITIONS: Record<string, string[]> = {
@@ -382,6 +396,72 @@ export class SafetyEventsService {
     return dto;
   }
 
+  /**
+   * DB-only creation of an AI-promoted SafetyEvent, called from inside
+   * `AiObservationsService.promote()`'s own transaction (same "child
+   * service does the row insert, caller controls the transaction boundary"
+   * shape as `EmergenciesService.createFromSafetyEvent`). `source: 'AI'`
+   * and `sourceAiObservationId` are set here and ONLY here — this is the
+   * single code path in the entire codebase that can ever produce an
+   * AI-sourced SafetyEvent, and it is only ever reached from a human's
+   * explicit `POST /ai-observations/:id/promote` call, never automatically.
+   * The `@unique` constraint on `sourceAiObservationId` means a second
+   * concurrent attempt to promote the same observation fails here with a
+   * Postgres unique-violation, which the caller translates into a clean
+   * 409/400 — see docs/adr/0022-ai-observation-review-and-safety-analytics.md's
+   * concurrency decision.
+   */
+  async createRowFromAiObservation(tx: Prisma.TransactionClient, params: AiPromotionParams): Promise<SafetyEventRow> {
+    return tx.safetyEvent.create({
+      data: {
+        schoolId: params.schoolId,
+        busId: params.busId,
+        tripId: params.tripId,
+        cameraId: params.cameraId,
+        type: params.type,
+        severity: params.severity,
+        source: 'AI',
+        occurredAt: new Date(),
+        description: params.description,
+        metadata: params.metadata as Prisma.InputJsonValue | undefined,
+        createdBy: params.createdBy,
+        sourceAiObservationId: params.sourceAiObservationId,
+      },
+      include: ROW_INCLUDE,
+    });
+  }
+
+  /**
+   * Audit + notification + realtime for a newly-created AI-promoted event —
+   * always called after the outer transaction (which also marks the
+   * AIObservation PROMOTED) has committed, the same "DB write, then
+   * post-commit side effects" split `EmergenciesService.afterCreate` uses.
+   * `actorId` is the reviewer who promoted it (a real human decision), even
+   * though `source` on the row itself is `'AI'` — `source` describes what
+   * originally detected the underlying signal, `createdBy`/this audit's
+   * actor describe who is accountable for creating the SafetyEvent record.
+   */
+  async afterAiPromotion(schoolId: string, reviewerId: string, row: SafetyEventRow, meta: RequestMeta): Promise<SafetyEventDto> {
+    await this.auditService.record(schoolId, {
+      actorType: 'USER',
+      actorId: reviewerId,
+      action: 'SAFETY_EVENT_CREATED',
+      subjectType: 'SafetyEvent',
+      subjectId: row.id,
+      requestId: meta.requestId,
+      ipAddress: meta.ip,
+      metadata: { type: row.type, severity: row.severity, source: 'AI', sourceAiObservationId: row.sourceAiObservationId },
+    });
+
+    if (row.severity === 'CRITICAL') {
+      this.domainEvents.publish({ type: 'SAFETY_EVENT_CRITICAL', schoolId, safetyEventId: row.id });
+    }
+
+    const dto = this.toDto(row);
+    this.safetyGateway.emitSafetyEventCreated(schoolId, dto);
+    return dto;
+  }
+
   private async transition(
     principal: AuthenticatedPrincipal,
     id: string,
@@ -420,6 +500,7 @@ export class SafetyEventsService {
       reviewedAt: row.reviewedAt?.toISOString() ?? null,
       resolutionNote: row.resolutionNote,
       emergencyId: row.emergency?.id ?? null,
+      sourceAiObservationId: row.sourceAiObservationId,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

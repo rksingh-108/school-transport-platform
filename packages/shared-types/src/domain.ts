@@ -240,7 +240,7 @@ export interface SafetyEventDto {
     | 'UNEXPECTED_STOP';
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   status: 'NEW' | 'ACKNOWLEDGED' | 'DISMISSED' | 'ESCALATED' | 'RESOLVED';
-  source: 'HUMAN_OPERATOR' | 'DRIVER' | 'ATTENDANT' | 'DEVICE' | 'CAMERA' | 'SYSTEM';
+  source: 'HUMAN_OPERATOR' | 'DRIVER' | 'ATTENDANT' | 'DEVICE' | 'CAMERA' | 'SYSTEM' | 'AI';
   occurredAt: string;
   detectedAt: string;
   description: string | null;
@@ -254,6 +254,10 @@ export interface SafetyEventDto {
   reviewedAt: string | null;
   resolutionNote: string | null;
   emergencyId: string | null;
+  // Set only when source is 'AI' — the AIObservation a human promoted into
+  // this event (Phase 3 Step 15). See
+  // docs/adr/0022-ai-observation-review-and-safety-analytics.md.
+  sourceAiObservationId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -357,7 +361,52 @@ export interface AIObservationDto {
   status: 'CANDIDATE' | 'REVIEWED' | 'DISMISSED' | 'PROMOTED';
   evidenceReference: string | null;
   metadata: Record<string, unknown> | null;
+  // Phase 3 Step 15 — set only by review()/dismiss()/promote().
+  reviewedBy: string | null;
+  reviewedByName: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  // The SafetyEvent this observation was promoted into, if any — null unless status is PROMOTED.
+  safetyEventId: string | null;
   createdAt: string;
+}
+
+/** Per-school, per-detection-type AI promotion policy (Phase 3 Step 15) — see docs/adr/0022-ai-observation-review-and-safety-analytics.md. */
+export interface AiSafetyPolicyDto {
+  id: string;
+  detectionType: AIObservationDto['detectionType'];
+  enabled: boolean;
+  minimumConfidence: number;
+  defaultSeverity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  requiresHumanReview: boolean;
+  createdBy: string;
+  createdByName: string;
+  updatedBy: string | null;
+  updatedByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Aggregated-only — never raw AIObservation/SafetyEvent rows. See the ADR's "analytics privacy" decision. */
+export interface SafetyAnalyticsDto {
+  summary: {
+    totalObservations: number;
+    promoted: number;
+    dismissed: number;
+    pendingReview: number;
+    totalSafetyEvents: number;
+    totalEmergencies: number;
+    /** "promotion rate," never "accuracy" — human review is not a scientific ground-truth evaluation. */
+    promotionRate: number | null;
+    dismissalRate: number | null;
+    averageReviewTimeSeconds: number | null;
+  };
+  observationsByDetectionType: Array<{ detectionType: string; count: number }>;
+  observationsByModel: Array<{ modelName: string; modelVersion: string; total: number; promoted: number }>;
+  safetyEventsBySeverity: Array<{ severity: string; count: number }>;
+  safetyEventsByBus: Array<{ busId: string; count: number }>;
+  emergenciesByStatus: Array<{ status: string; count: number }>;
+  dailyTrend: Array<{ date: string; observations: number; safetyEvents: number }>;
 }
 
 export interface EmergencyDto {

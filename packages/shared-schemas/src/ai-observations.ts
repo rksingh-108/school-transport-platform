@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SEVERITIES } from './safety-events';
 
 export const AI_DETECTION_TYPES = [
   'PERSON_DETECTED',
@@ -83,3 +84,39 @@ export const edgeAiHeartbeatSchema = z.object({
   health: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 export type EdgeAiHeartbeatInput = z.infer<typeof edgeAiHeartbeatSchema>;
+
+// ---------------------------------------------------------------------------
+// Human review workflow (Phase 3 Step 15) — three dedicated state-transition
+// endpoints, never a generic PATCH. See
+// docs/adr/0022-ai-observation-review-and-safety-analytics.md. None of these
+// accept model/modelVersion/confidence/occurredAt/cameraId/edgeDeviceId —
+// the original AI detection is immutable; only the review outcome is being
+// recorded.
+// ---------------------------------------------------------------------------
+
+const REVIEW_NOTE_MAX_LENGTH = 2000;
+
+/** CANDIDATE → REVIEWED only — a lightweight "seen, still deciding" marker. */
+export const reviewAiObservationSchema = z.object({
+  reviewNote: z.string().max(REVIEW_NOTE_MAX_LENGTH).optional(),
+});
+export type ReviewAiObservationInput = z.infer<typeof reviewAiObservationSchema>;
+
+/** {CANDIDATE, REVIEWED} → DISMISSED — terminal, no SafetyEvent is ever created. */
+export const dismissAiObservationSchema = z.object({
+  reviewNote: z.string().max(REVIEW_NOTE_MAX_LENGTH).optional(),
+});
+export type DismissAiObservationInput = z.infer<typeof dismissAiObservationSchema>;
+
+/**
+ * {CANDIDATE, REVIEWED} → PROMOTED — creates the linked SafetyEvent.
+ * `severity` is an optional human override of the school's configured
+ * `AiSafetyPolicy.defaultSeverity` for this detection type — the reviewer
+ * just looked at the evidence and may judge it more or less severe than the
+ * school's static default; omitting it uses the policy default.
+ */
+export const promoteAiObservationSchema = z.object({
+  reviewNote: z.string().max(REVIEW_NOTE_MAX_LENGTH).optional(),
+  severity: z.enum(SEVERITIES).optional(),
+});
+export type PromoteAiObservationInput = z.infer<typeof promoteAiObservationSchema>;
