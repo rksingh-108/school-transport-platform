@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Query,
   Req,
   Res,
   UnauthorizedException,
@@ -99,8 +100,12 @@ export class AuthController {
   @Throttle(REFRESH_THROTTLE)
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const rawToken = req.cookies?.[STAFF_COOKIE] ?? req.cookies?.[PARENT_COOKIE];
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Query('audience') audienceHint?: string,
+  ) {
+    const rawToken = this.pickRefreshCookie(req, audienceHint);
     if (!rawToken) {
       throw new UnauthorizedException('No refresh token present.');
     }
@@ -120,9 +125,12 @@ export class AuthController {
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const staffToken = req.cookies?.[STAFF_COOKIE];
     const parentToken = req.cookies?.[PARENT_COOKIE];
-    const rawToken = staffToken ?? parentToken;
 
-    await this.authService.logout(rawToken, this.metaFrom(req));
+    // Both cookies are cleared client-side below, so both underlying sessions
+    // must actually be revoked server-side too — otherwise a token from the
+    // non-picked audience would remain valid in the database after "logout".
+    if (staffToken) await this.authService.logout(staffToken, this.metaFrom(req));
+    if (parentToken) await this.authService.logout(parentToken, this.metaFrom(req));
 
     if (staffToken) this.clearRefreshCookie(res, 'STAFF');
     if (parentToken) this.clearRefreshCookie(res, 'PARENT');
@@ -187,6 +195,17 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
       requestId: req.id,
     };
+  }
+
+  // Both a staff and a parent refresh cookie can legitimately coexist in the
+  // same browser (e.g. one tab used for both roles without logging out
+  // in between). Without a hint we keep the old staff-first fallback so any
+  // caller that doesn't send one behaves exactly as before; the frontend
+  // sends a hint derived from the current route so the right session wins.
+  private pickRefreshCookie(req: Request, audienceHint?: string): string | undefined {
+    if (audienceHint === 'PARENT') return req.cookies?.[PARENT_COOKIE];
+    if (audienceHint === 'STAFF') return req.cookies?.[STAFF_COOKIE];
+    return req.cookies?.[STAFF_COOKIE] ?? req.cookies?.[PARENT_COOKIE];
   }
 
   private setRefreshCookie(res: Response, audience: AuthPrincipalType, raw: string, expiresAt: Date) {

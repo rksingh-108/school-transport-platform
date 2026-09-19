@@ -480,6 +480,34 @@ describe('Authentication (e2e)', () => {
       const afterLogout = await api().post('/api/v1/auth/refresh').set('Cookie', cookie);
       expect(afterLogout.status).toBe(401);
     });
+
+    it('with both a staff and a parent cookie present, refresh honors the audience hint instead of always preferring staff', async () => {
+      const staffLogin = await api().post('/api/v1/auth/staff/login').send({ email: staffActive.email, password: STAFF_PASSWORD });
+      const parentLogin = await api().post('/api/v1/auth/parent/login').send({ phone: parentActive.phone, password: PARENT_PASSWORD });
+      const staffCookie = extractCookie(staffLogin, 'staff_refresh_token');
+      const parentCookie = extractCookie(parentLogin, 'parent_refresh_token');
+      const both = `${staffCookie}; ${parentCookie}`;
+
+      const parentRefresh = await api().post('/api/v1/auth/refresh?audience=PARENT').set('Cookie', both);
+      expect(parentRefresh.status).toBe(200);
+      expect(parentRefresh.body.principal.type).toBe('PARENT');
+
+      const staffRefresh = await api().post('/api/v1/auth/refresh?audience=STAFF').set('Cookie', both);
+      expect(staffRefresh.status).toBe(200);
+      expect(staffRefresh.body.principal.type).toBe('STAFF');
+    });
+
+    it('with both cookies present and no audience hint, refresh falls back to preferring staff (unchanged default behavior)', async () => {
+      const staffLogin = await api().post('/api/v1/auth/staff/login').send({ email: staffActive.email, password: STAFF_PASSWORD });
+      const parentLogin = await api().post('/api/v1/auth/parent/login').send({ phone: parentActive.phone, password: PARENT_PASSWORD });
+      const staffCookie = extractCookie(staffLogin, 'staff_refresh_token');
+      const parentCookie = extractCookie(parentLogin, 'parent_refresh_token');
+      const both = `${staffCookie}; ${parentCookie}`;
+
+      const res = await api().post('/api/v1/auth/refresh').set('Cookie', both);
+      expect(res.status).toBe(200);
+      expect(res.body.principal.type).toBe('STAFF');
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -501,6 +529,24 @@ describe('Authentication (e2e)', () => {
       const refreshB = await api().post('/api/v1/auth/refresh').set('Cookie', cookieB);
       expect(refreshA.status).toBe(401);
       expect(refreshB.status).toBe(401);
+    });
+  });
+
+  describe('logout', () => {
+    it('with both a staff and a parent cookie present, revokes BOTH sessions server-side, not just the preferred one', async () => {
+      const staffLogin = await api().post('/api/v1/auth/staff/login').send({ email: staffActive.email, password: STAFF_PASSWORD });
+      const parentLogin = await api().post('/api/v1/auth/parent/login').send({ phone: parentActive.phone, password: PARENT_PASSWORD });
+      const staffCookie = extractCookie(staffLogin, 'staff_refresh_token');
+      const parentCookie = extractCookie(parentLogin, 'parent_refresh_token');
+      const both = `${staffCookie}; ${parentCookie}`;
+
+      const logoutRes = await api().post('/api/v1/auth/logout').set('Cookie', both);
+      expect(logoutRes.status).toBe(200);
+
+      const staffRefresh = await api().post('/api/v1/auth/refresh?audience=STAFF').set('Cookie', both);
+      const parentRefresh = await api().post('/api/v1/auth/refresh?audience=PARENT').set('Cookie', both);
+      expect(staffRefresh.status).toBe(401);
+      expect(parentRefresh.status).toBe(401);
     });
   });
 
