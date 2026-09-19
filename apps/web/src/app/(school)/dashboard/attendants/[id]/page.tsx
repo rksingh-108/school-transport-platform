@@ -3,12 +3,17 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { AttendantDto } from '@school-transport/shared-types';
+import { ArrowLeft } from 'lucide-react';
 import { activateAttendant, deactivateAttendant, getAttendant } from '@/lib/api/attendants';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/badge';
+import { Avatar } from '@/components/ui/avatar';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
 import { LoadingState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
@@ -29,6 +34,7 @@ export default function AttendantDetailPage() {
 
 function AttendantView({ attendant }: { attendant: AttendantDto }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('attendants.manage');
 
@@ -44,6 +50,7 @@ function AttendantView({ attendant }: { attendant: AttendantDto }) {
       const updated = current.status === 'ACTIVE' ? await deactivateAttendant(current.id) : await activateAttendant(current.id);
       setCurrent(updated);
       setConfirmToggle(false);
+      toast.success(current.status === 'ACTIVE' ? 'Attendant deactivated' : 'Attendant activated');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to update status.');
     } finally {
@@ -53,26 +60,37 @@ function AttendantView({ attendant }: { attendant: AttendantDto }) {
 
   return (
     <div className="max-w-lg space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.fullName}</h1>
-          <p className="text-sm text-zinc-500">{current.email}</p>
-        </div>
-        <StatusBadge status={current.status} />
-      </div>
+      <PageHeader
+        breadcrumbs={[{ label: 'Attendants', href: '/dashboard/attendants' }, { label: current.fullName }]}
+        title={current.fullName}
+        description={current.email}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
+          </div>
+        }
+      />
 
-      {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
-
-      <div className="flex justify-between border-t border-zinc-200 pt-4 dark:border-zinc-800">
-        <Button variant="secondary" onClick={() => router.back()}>
-          Back
-        </Button>
-        {canManage && (
-          <Button variant={current.status === 'ACTIVE' ? 'danger' : 'primary'} onClick={() => setConfirmToggle(true)}>
-            {current.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-          </Button>
-        )}
-      </div>
+      <Card>
+        <CardBody className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Avatar name={current.fullName} size="lg" />
+            <div>
+              <p className="text-sm font-medium text-(--color-text)">{current.fullName}</p>
+              <p className="text-xs text-(--color-text-faint)">{current.email}</p>
+            </div>
+          </div>
+          {actionError && <p className="text-sm text-(--color-danger-text)">{actionError}</p>}
+          {canManage && (
+            <div className="flex justify-end border-t border-(--color-border) pt-4">
+              <Button variant={current.status === 'ACTIVE' ? 'danger' : 'primary'} onClick={() => setConfirmToggle(true)}>
+                {current.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+              </Button>
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       <ConfirmDialog
         open={confirmToggle}

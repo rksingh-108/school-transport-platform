@@ -3,13 +3,17 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { StudentDto } from '@school-transport/shared-types';
+import { ArrowLeft } from 'lucide-react';
 import { archiveStudent, getStudent, updateStudent } from '@/lib/api/students';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
 import { LoadingState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
@@ -30,6 +34,7 @@ export default function StudentDetailPage() {
 
 function StudentEditForm({ student, onArchived }: { student: StudentDto; onArchived: () => void }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canUpdate = principal?.type === 'STAFF' && principal.permissions.includes('students.update');
   const canArchive = principal?.type === 'STAFF' && principal.permissions.includes('students.delete');
@@ -49,6 +54,7 @@ function StudentEditForm({ student, onArchived }: { student: StudentDto; onArchi
     try {
       const updated = await updateStudent(student.id, { fullName, grade: grade || undefined, section: section || undefined });
       setCurrent(updated);
+      toast.success('Student saved');
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -62,6 +68,7 @@ function StudentEditForm({ student, onArchived }: { student: StudentDto; onArchi
       const updated = await archiveStudent(student.id);
       setCurrent(updated);
       setConfirmArchive(false);
+      toast.success('Student archived');
       onArchived();
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Unable to archive student.');
@@ -72,45 +79,46 @@ function StudentEditForm({ student, onArchived }: { student: StudentDto; onArchi
 
   return (
     <div className="max-w-lg">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.fullName}</h1>
-          <p className="text-sm text-zinc-500">Admission #{current.admissionNumber}</p>
-        </div>
-        <StatusBadge status={current.status} />
-      </div>
+      <PageHeader
+        breadcrumbs={[{ label: 'Students', href: '/dashboard/students' }, { label: current.fullName }]}
+        title={current.fullName}
+        description={`Admission #${current.admissionNumber}`}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
+          </div>
+        }
+      />
 
-      <div className="space-y-4">
-        <FormField label="Full name" htmlFor="fullName">
-          <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
-        </FormField>
-        <div className="grid grid-cols-2 gap-4">
-          <FormField label="Grade" htmlFor="grade">
-            <Input id="grade" value={grade} disabled={!canUpdate} onChange={(e) => setGrade(e.target.value)} />
+      <Card>
+        <CardBody className="space-y-4">
+          <FormField label="Full name" htmlFor="fullName">
+            <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
           </FormField>
-          <FormField label="Section" htmlFor="section">
-            <Input id="section" value={section} disabled={!canUpdate} onChange={(e) => setSection(e.target.value)} />
-          </FormField>
-        </div>
-        {saveError && <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>}
-        <div className="flex justify-between">
-          <div className="flex gap-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <FormField label="Grade" htmlFor="grade">
+              <Input id="grade" value={grade} disabled={!canUpdate} onChange={(e) => setGrade(e.target.value)} />
+            </FormField>
+            <FormField label="Section" htmlFor="section">
+              <Input id="section" value={section} disabled={!canUpdate} onChange={(e) => setSection(e.target.value)} />
+            </FormField>
+          </div>
+          {saveError && <p className="text-sm text-(--color-danger-text)">{saveError}</p>}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-(--color-border) pt-4">
             {canUpdate && (
               <Button onClick={onSave} loading={saving}>
                 Save changes
               </Button>
             )}
-            <Button variant="secondary" onClick={() => router.back()}>
-              Back
-            </Button>
+            {canArchive && current.status === 'ACTIVE' && (
+              <Button variant="danger" onClick={() => setConfirmArchive(true)}>
+                Archive
+              </Button>
+            )}
           </div>
-          {canArchive && current.status === 'ACTIVE' && (
-            <Button variant="danger" onClick={() => setConfirmArchive(true)}>
-              Archive
-            </Button>
-          )}
-        </div>
-      </div>
+        </CardBody>
+      </Card>
 
       <ConfirmDialog
         open={confirmArchive}

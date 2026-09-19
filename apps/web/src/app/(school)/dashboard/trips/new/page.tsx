@@ -10,6 +10,8 @@ import { listAttendants } from '@/lib/api/attendants';
 import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { FormField, Input, Select } from '@/components/ui/field';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
 import { LoadingState } from '@/components/ui/states';
 
 function todayIso(): string {
@@ -78,93 +80,98 @@ export default function NewTripPage() {
     }
   }
 
-  if (loadError) return <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>;
+  if (loadError) return <p className="text-sm text-(--color-danger-text)">{loadError}</p>;
   if (!options) return <LoadingState />;
 
   return (
     <div className="max-w-lg">
-      <h1 className="mb-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">New trip</h1>
-      <p className="mb-6 text-sm text-zinc-500">
-        Schedules one execution of a route with a bus, driver, and (optionally) an attendant. You can add students to the manifest after creating it.
-      </p>
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        <FormField label="Route" htmlFor="routeId">
-          <Select id="routeId" required value={routeId} onChange={(e) => setRouteId(e.target.value)}>
-            <option value="" disabled>
-              Select a route
-            </option>
-            {options.routes.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.code ? `${r.code} — ` : ''}
-                {r.name}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+      <PageHeader
+        title="New trip"
+        description="Schedules one execution of a route with a bus, driver, and (optionally) an attendant. You can add students to the manifest after creating it."
+        breadcrumbs={[{ label: 'Trips', href: '/dashboard/trips' }, { label: 'New' }]}
+      />
+      <Card>
+        <CardBody>
+          <form onSubmit={onSubmit} className="space-y-4" noValidate>
+            <FormField label="Route" htmlFor="routeId">
+              <Select id="routeId" required value={routeId} onChange={(e) => setRouteId(e.target.value)}>
+                <option value="" disabled>
+                  Select a route
+                </option>
+                {options.routes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.code ? `${r.code} — ` : ''}
+                    {r.name}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
 
-        <div className="grid grid-cols-3 gap-4">
-          <FormField label="Service date" htmlFor="serviceDate">
-            <Input id="serviceDate" type="date" required value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
-          </FormField>
-          <FormField label="Start time" htmlFor="scheduledStartTime">
-            <Input id="scheduledStartTime" type="time" required value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
-          </FormField>
-          <FormField label="End time" htmlFor="scheduledEndTime">
-            <Input id="scheduledEndTime" type="time" required value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
-          </FormField>
-        </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <FormField label="Service date" htmlFor="serviceDate">
+                <Input id="serviceDate" type="date" required value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+              </FormField>
+              <FormField label="Start time" htmlFor="scheduledStartTime">
+                <Input id="scheduledStartTime" type="time" required value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
+              </FormField>
+              <FormField label="End time" htmlFor="scheduledEndTime">
+                <Input id="scheduledEndTime" type="time" required value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
+              </FormField>
+            </div>
 
-        <FormField label="Bus" htmlFor="busId">
-          <Select id="busId" required value={busId} onChange={(e) => setBusId(e.target.value)}>
-            <option value="" disabled>
-              Select a bus
-            </option>
-            {options.buses.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.fleetNumber ?? b.registrationNumber}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+            <FormField label="Bus" htmlFor="busId">
+              <Select id="busId" required value={busId} onChange={(e) => setBusId(e.target.value)}>
+                <option value="" disabled>
+                  Select a bus
+                </option>
+                {options.buses.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.fleetNumber ?? b.registrationNumber}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
 
-        <FormField label="Driver" htmlFor="driverId">
-          <Select id="driverId" required value={driverId} onChange={(e) => setDriverId(e.target.value)}>
-            <option value="" disabled>
-              Select a driver
-            </option>
-            {options.drivers.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.fullName}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+            <FormField label="Driver" htmlFor="driverId">
+              <Select id="driverId" required value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+                <option value="" disabled>
+                  Select a driver
+                </option>
+                {options.drivers.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.fullName}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
 
-        <FormField label="Attendant (optional)" htmlFor="attendantId">
-          <Select id="attendantId" value={attendantId} onChange={(e) => setAttendantId(e.target.value)}>
-            <option value="">No attendant</option>
-            {options.attendants.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.fullName}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+            <FormField label="Attendant (optional)" htmlFor="attendantId">
+              <Select id="attendantId" value={attendantId} onChange={(e) => setAttendantId(e.target.value)}>
+                <option value="">No attendant</option>
+                {options.attendants.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.fullName}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
 
-        <FormField label="Notes" htmlFor="notes">
-          <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-        </FormField>
+            <FormField label="Notes" htmlFor="notes">
+              <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </FormField>
 
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-        <div className="flex gap-2">
-          <Button type="submit" loading={loading}>
-            Create trip
-          </Button>
-          <Button type="button" variant="secondary" onClick={() => router.back()}>
-            Cancel
-          </Button>
-        </div>
-      </form>
+            {error && <p className="text-sm text-(--color-danger-text)">{error}</p>}
+            <div className="flex gap-2 border-t border-(--color-border) pt-4">
+              <Button type="submit" loading={loading}>
+                Create trip
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => router.back()}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </CardBody>
+      </Card>
     </div>
   );
 }

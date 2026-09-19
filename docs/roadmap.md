@@ -145,8 +145,11 @@ surface):
     DTO field exclusion, multi-child parent, cross-parent and cross-tenant
     IDOR, RLS enforcement, and WebSocket child-isolation with a real
     socket.io-client — confirmed both in e2e tests and live against the
-    running server. **Not done**: a real map provider (no vendor
-    configured — see [ADR 0007](adr/0007-map-and-storage-provider-abstraction.md)),
+    running server. A tile-based map (Leaflet + OpenStreetMap tiles,
+    swappable via env vars) was added later to visualize this same location
+    data — see the 2026-08-31 update in
+    [ADR 0007](adr/0007-map-and-storage-provider-abstraction.md). **Still not
+    done**: route geometry/ETA/geocoding (no such provider integrated),
     a historical/past-trips view (only the current/active trip is
     resolved), and timeline/notifications-preferences UI (notifications
     themselves are Step 9, not started).

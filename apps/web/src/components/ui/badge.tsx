@@ -1,10 +1,23 @@
-type Tone = 'neutral' | 'success' | 'warning' | 'danger';
+import { cn } from '@/lib/cn';
+
+type Tone = 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'brand';
 
 const toneClasses: Record<Tone, string> = {
-  neutral: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
-  success: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  danger: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  neutral: 'bg-(--color-neutral-bg) text-(--color-neutral-text) ring-(--color-neutral-border)',
+  success: 'bg-(--color-success-bg) text-(--color-success-text) ring-(--color-success-border)',
+  warning: 'bg-(--color-warning-bg) text-(--color-warning-text) ring-(--color-warning-border)',
+  danger: 'bg-(--color-danger-bg) text-(--color-danger-text) ring-(--color-danger-border)',
+  info: 'bg-(--color-info-bg) text-(--color-info-text) ring-(--color-info-border)',
+  brand: 'bg-(--color-brand-bg) text-(--color-brand-text) ring-(--color-brand-border)',
+};
+
+const dotClasses: Record<Tone, string> = {
+  neutral: 'bg-(--color-neutral-solid)',
+  success: 'bg-(--color-success-solid)',
+  warning: 'bg-(--color-warning-solid)',
+  danger: 'bg-(--color-danger-solid)',
+  info: 'bg-(--color-info-solid)',
+  brand: 'bg-(--color-brand)',
 };
 
 const STATUS_TONE: Record<string, Tone> = {
@@ -51,15 +64,39 @@ const STATUS_TONE: Record<string, Tone> = {
   CRITICAL: 'danger',
 };
 
-export function Badge({ tone = 'neutral', children }: { tone?: Tone; children: React.ReactNode }) {
+export function Badge({
+  tone = 'neutral',
+  dot,
+  className,
+  children,
+}: {
+  tone?: Tone;
+  dot?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${toneClasses[tone]}`}>
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset',
+        toneClasses[tone],
+        className,
+      )}
+    >
+      {dot && <span className={cn('h-1.5 w-1.5 rounded-full', dotClasses[tone])} />}
       {children}
     </span>
   );
 }
 
 /** Maps a known status string (account/school/student status) to a sensible tone automatically. */
-export function StatusBadge({ status }: { status: string }) {
-  return <Badge tone={STATUS_TONE[status] ?? 'neutral'}>{status}</Badge>;
+export function StatusBadge({ status, dot }: { status: string; dot?: boolean }) {
+  return (
+    <Badge tone={STATUS_TONE[status] ?? 'neutral'} dot={dot}>
+      {status.replaceAll('_', ' ')}
+    </Badge>
+  );
 }
+
+export { STATUS_TONE };
+export type { Tone };

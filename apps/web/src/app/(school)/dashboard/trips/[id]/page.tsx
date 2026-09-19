@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { TripDto, TripStopDto, TripStudentDto, StudentDto, AttendanceEventDto } from '@school-transport/shared-types';
+import { ArrowLeft, Check, MapPin, XCircle } from 'lucide-react';
 import {
   addTripStudent,
   cancelTrip,
@@ -25,14 +26,20 @@ import { listStudents } from '@/lib/api/students';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input, Select } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardHeader, CardBody } from '@/components/ui/card';
+import { Tabs, type TabItem } from '@/components/ui/tabs';
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { cn } from '@/lib/cn';
 
 const DIRECTION_LABELS: Record<string, string> = { HOME_TO_SCHOOL: 'Home → School', SCHOOL_TO_HOME: 'School → Home' };
 const EDITABLE_STATUSES = new Set(['SCHEDULED', 'READY']);
+const TRIP_STEPS = ['SCHEDULED', 'READY', 'IN_PROGRESS', 'COMPLETED'] as const;
 
 function errorMessage(error: unknown, notFoundMessage: string): string {
   if (error instanceof ApiError) return error.status === 404 ? notFoundMessage : error.message;
@@ -42,6 +49,51 @@ function errorMessage(error: unknown, notFoundMessage: string): string {
 async function loadAll(id: string) {
   const [trip, stops, manifest] = await Promise.all([getTrip(id), listTripStops(id), listManifest(id)]);
   return { trip, stops, manifest };
+}
+
+/** SCHEDULED → READY → IN_PROGRESS → COMPLETED as a stepper; CANCELLED/NO_SHOW get a distinct terminal banner instead of forcing a stepper position. */
+function TripStepper({ status }: { status: TripDto['status'] }) {
+  if (status === 'CANCELLED' || status === 'NO_SHOW') {
+    return (
+      <div className="flex items-center gap-2 rounded-(--radius-md) border border-(--color-danger-border) bg-(--color-danger-bg) px-4 py-3 text-sm text-(--color-danger-text)">
+        <XCircle className="h-4 w-4 shrink-0" />
+        {status === 'CANCELLED' ? 'This trip was cancelled.' : 'This trip was marked as no-show.'}
+      </div>
+    );
+  }
+
+  const currentIndex = TRIP_STEPS.indexOf(status as (typeof TRIP_STEPS)[number]);
+
+  return (
+    <div className="flex items-center">
+      {TRIP_STEPS.map((step, i) => {
+        const done = i < currentIndex;
+        const active = i === currentIndex;
+        return (
+          <div key={step} className="flex flex-1 items-center last:flex-none">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                  done && 'bg-(--color-success-solid) text-white',
+                  active && 'bg-(--color-brand) text-white',
+                  !done && !active && 'bg-(--color-neutral-bg) text-(--color-text-faint)',
+                )}
+              >
+                {done ? <Check className="h-3.5 w-3.5" /> : i + 1}
+              </span>
+              <span className={cn('text-xs font-medium whitespace-nowrap', active ? 'text-(--color-text)' : 'text-(--color-text-faint)')}>
+                {step.replaceAll('_', ' ')}
+              </span>
+            </div>
+            {i < TRIP_STEPS.length - 1 && (
+              <div className={cn('mx-3 h-0.5 flex-1', done ? 'bg-(--color-success-solid)' : 'bg-(--color-neutral-bg)')} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function TripDetailPage() {
@@ -64,6 +116,7 @@ function TripDetailView({
   initialManifest: TripStudentDto[];
 }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('trips.manage');
   const canOperate = canManage || (principal?.type === 'STAFF' && principal.roles.includes('DRIVER'));
@@ -118,6 +171,7 @@ function TripDetailView({
         notes: notes || undefined,
       });
       setCurrent(updated);
+      toast.success('Trip saved');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -168,163 +222,175 @@ function TripDetailView({
     }
   }
 
-  return (
-    <div className="max-w-2xl space-y-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            {current.routeCode ? `${current.routeCode} — ` : ''}
-            {current.routeName}
-          </h1>
-          <p className="text-sm text-zinc-500">
-            {DIRECTION_LABELS[current.direction] ?? current.direction} · {current.serviceDate} · {current.scheduledStartTime}–{current.scheduledEndTime}
-          </p>
-        </div>
-        <StatusBadge status={current.status} />
-      </div>
-
-      <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Assignment</h2>
-        {!editable || !canManage || !assignOptions ? (
-          <dl className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <dt className="text-zinc-500">Bus</dt>
-              <dd className="text-zinc-900 dark:text-zinc-100">{current.busFleetNumber ?? current.busRegistrationNumber}</dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Driver</dt>
-              <dd className="text-zinc-900 dark:text-zinc-100">{current.driverName}</dd>
-            </div>
-            <div>
-              <dt className="text-zinc-500">Attendant</dt>
-              <dd className="text-zinc-900 dark:text-zinc-100">{current.attendantName ?? '—'}</dd>
-            </div>
-            {current.notes && (
+  const overviewTab = (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader title="Assignment" />
+        <CardBody className="space-y-4">
+          {!editable || !canManage || !assignOptions ? (
+            <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
-                <dt className="text-zinc-500">Notes</dt>
-                <dd className="text-zinc-900 dark:text-zinc-100">{current.notes}</dd>
+                <dt className="text-(--color-text-faint)">Bus</dt>
+                <dd className="text-(--color-text)">{current.busFleetNumber ?? current.busRegistrationNumber}</dd>
               </div>
-            )}
-            {current.cancellationReason && (
-              <div className="col-span-2">
-                <dt className="text-zinc-500">Reason</dt>
-                <dd className="text-zinc-900 dark:text-zinc-100">{current.cancellationReason}</dd>
+              <div>
+                <dt className="text-(--color-text-faint)">Driver</dt>
+                <dd className="text-(--color-text)">{current.driverName}</dd>
               </div>
+              <div>
+                <dt className="text-(--color-text-faint)">Attendant</dt>
+                <dd className="text-(--color-text)">{current.attendantName ?? '—'}</dd>
+              </div>
+              {current.notes && (
+                <div>
+                  <dt className="text-(--color-text-faint)">Notes</dt>
+                  <dd className="text-(--color-text)">{current.notes}</dd>
+                </div>
+              )}
+              {current.cancellationReason && (
+                <div className="sm:col-span-2">
+                  <dt className="text-(--color-text-faint)">Reason</dt>
+                  <dd className="text-(--color-text)">{current.cancellationReason}</dd>
+                </div>
+              )}
+            </dl>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <FormField label="Service date" htmlFor="serviceDate">
+                  <Input id="serviceDate" type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                </FormField>
+                <FormField label="Start time" htmlFor="startTime">
+                  <Input id="startTime" type="time" value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
+                </FormField>
+                <FormField label="End time" htmlFor="endTime">
+                  <Input id="endTime" type="time" value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
+                </FormField>
+              </div>
+              <FormField label="Bus" htmlFor="busId">
+                <Select id="busId" value={busId} onChange={(e) => setBusId(e.target.value)}>
+                  {assignOptions.buses.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.fleetNumber ?? b.registrationNumber}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Driver" htmlFor="driverId">
+                <Select id="driverId" value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+                  {assignOptions.drivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.fullName}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Attendant" htmlFor="attendantId">
+                <Select id="attendantId" value={attendantId} onChange={(e) => setAttendantId(e.target.value)}>
+                  <option value="">No attendant</option>
+                  {assignOptions.attendants.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.fullName}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Notes" htmlFor="notes">
+                <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </FormField>
+              {current.status === 'READY' && (
+                <p className="text-xs text-(--color-warning-text)">Saving a change here will move this trip back to Scheduled.</p>
+              )}
+              <Button onClick={onSave} loading={saving}>
+                Save changes
+              </Button>
+            </>
+          )}
+
+          {actionError && <p className="text-sm text-(--color-danger-text)">{actionError}</p>}
+
+          <div className="flex flex-wrap gap-2 border-t border-(--color-border) pt-4">
+            {canManage && current.status === 'SCHEDULED' && (
+              <Button onClick={() => runAction(() => readyTrip(current.id))} loading={actionBusy}>
+                Mark ready
+              </Button>
             )}
-          </dl>
-        ) : (
-          <>
-            <div className="grid grid-cols-3 gap-3">
-              <FormField label="Service date" htmlFor="serviceDate">
-                <Input id="serviceDate" type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
-              </FormField>
-              <FormField label="Start time" htmlFor="startTime">
-                <Input id="startTime" type="time" value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
-              </FormField>
-              <FormField label="End time" htmlFor="endTime">
-                <Input id="endTime" type="time" value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
-              </FormField>
-            </div>
-            <FormField label="Bus" htmlFor="busId">
-              <Select id="busId" value={busId} onChange={(e) => setBusId(e.target.value)}>
-                {assignOptions.buses.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.fleetNumber ?? b.registrationNumber}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="Driver" htmlFor="driverId">
-              <Select id="driverId" value={driverId} onChange={(e) => setDriverId(e.target.value)}>
-                {assignOptions.drivers.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.fullName}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="Attendant" htmlFor="attendantId">
-              <Select id="attendantId" value={attendantId} onChange={(e) => setAttendantId(e.target.value)}>
-                <option value="">No attendant</option>
-                {assignOptions.attendants.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.fullName}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="Notes" htmlFor="notes">
-              <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </FormField>
-            {current.status === 'READY' && (
-              <p className="text-xs text-amber-600 dark:text-amber-400">Saving a change here will move this trip back to Scheduled.</p>
+            {canOperate && current.status === 'READY' && (
+              <Button onClick={() => runAction(() => startTrip(current.id))} loading={actionBusy}>
+                Start trip
+              </Button>
             )}
-            <Button onClick={onSave} loading={saving}>
-              Save changes
-            </Button>
-          </>
-        )}
-
-        {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
-
-        <div className="flex flex-wrap gap-2 border-t border-zinc-200 pt-4 dark:border-zinc-800">
-          <Button variant="secondary" onClick={() => router.back()}>
-            Back
-          </Button>
-          {canManage && current.status === 'SCHEDULED' && (
-            <Button onClick={() => runAction(() => readyTrip(current.id))} loading={actionBusy}>
-              Mark ready
-            </Button>
-          )}
-          {canOperate && current.status === 'READY' && (
-            <Button onClick={() => runAction(() => startTrip(current.id))} loading={actionBusy}>
-              Start trip
-            </Button>
-          )}
-          {canOperate && current.status === 'IN_PROGRESS' && (
-            <Button onClick={() => runAction(() => completeTrip(current.id))} loading={actionBusy}>
-              Complete trip
-            </Button>
-          )}
-          {canManage && (current.status === 'SCHEDULED' || current.status === 'READY') && (
-            <Button variant="secondary" onClick={() => setConfirmNoShow(true)}>
-              Mark no-show
-            </Button>
-          )}
-          {canManage && (current.status === 'SCHEDULED' || current.status === 'READY' || current.status === 'IN_PROGRESS') && (
-            <Button variant="danger" onClick={() => setConfirmCancel(true)}>
-              Cancel trip
-            </Button>
-          )}
-        </div>
-      </div>
-
-      <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Stops ({stops.length})</h2>
-        <p className="text-xs text-zinc-500">A fixed snapshot taken when this trip was created — editing the route afterward never changes it.</p>
-        {stops.map((s) => (
-          <div key={s.id} className="flex items-center gap-3 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-100 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-              {s.sequenceNo}
-            </span>
-            <div>
-              <p className="font-medium text-zinc-900 dark:text-zinc-100">{s.name}</p>
-              <p className="text-xs text-zinc-500">
-                {s.address ?? `${s.latitude}, ${s.longitude}`} · {s.mode} · +{s.expectedOffsetMinutes}min
-              </p>
-            </div>
+            {canOperate && current.status === 'IN_PROGRESS' && (
+              <Button onClick={() => runAction(() => completeTrip(current.id))} loading={actionBusy}>
+                Complete trip
+              </Button>
+            )}
+            {canManage && (current.status === 'SCHEDULED' || current.status === 'READY') && (
+              <Button variant="secondary" onClick={() => setConfirmNoShow(true)}>
+                Mark no-show
+              </Button>
+            )}
+            {canManage && (current.status === 'SCHEDULED' || current.status === 'READY' || current.status === 'IN_PROGRESS') && (
+              <Button variant="danger" onClick={() => setConfirmCancel(true)}>
+                Cancel trip
+              </Button>
+            )}
           </div>
-        ))}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title={`Stops (${stops.length})`} description="A fixed snapshot taken when this trip was created — editing the route afterward never changes it." />
+        <CardBody className="space-y-2">
+          {stops.map((s) => (
+            <div key={s.id} className="flex items-center gap-3 rounded-(--radius-sm) border border-(--color-border) px-3 py-2 text-sm">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-(--color-brand-bg) text-xs font-semibold text-(--color-brand-text)">
+                {s.sequenceNo}
+              </span>
+              <div>
+                <p className="font-medium text-(--color-text)">{s.name}</p>
+                <p className="flex items-center gap-1 text-xs text-(--color-text-faint)">
+                  <MapPin className="h-3 w-3" />
+                  {s.address ?? `${s.latitude}, ${s.longitude}`} · {s.mode} · +{s.expectedOffsetMinutes}min
+                </p>
+              </div>
+            </div>
+          ))}
+        </CardBody>
+      </Card>
+    </div>
+  );
+
+  const manifestTab = (
+    <ManifestSection
+      tripId={current.id}
+      stops={stops}
+      manifest={manifest}
+      onManifestChange={setManifest}
+      canManage={canManage}
+      canRecordAttendance={canRecordAttendance}
+    />
+  );
+
+  const tabs: TabItem[] = [
+    { id: 'overview', label: 'Overview', content: overviewTab },
+    { id: 'manifest', label: `Manifest & Attendance (${manifest.length})`, content: manifestTab },
+  ];
+
+  return (
+    <div className="max-w-2xl">
+      <PageHeader
+        breadcrumbs={[{ label: 'Trips', href: '/dashboard/trips' }, { label: current.routeName }]}
+        title={`${current.routeCode ? `${current.routeCode} — ` : ''}${current.routeName}`}
+        description={`${DIRECTION_LABELS[current.direction] ?? current.direction} · ${current.serviceDate} · ${current.scheduledStartTime}–${current.scheduledEndTime}`}
+        actions={<IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />}
+      />
+
+      <div className="mb-6">
+        <TripStepper status={current.status} />
       </div>
 
-      <ManifestSection
-        tripId={current.id}
-        stops={stops}
-        manifest={manifest}
-        onManifestChange={setManifest}
-        canManage={canManage}
-        canRecordAttendance={canRecordAttendance}
-      />
+      <Tabs items={tabs} />
 
       <ConfirmDialog
         open={confirmCancel}
@@ -462,129 +528,133 @@ function ManifestSection({
   }
 
   return (
-    <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Student manifest ({manifest.length})</h2>
-
+    <div className="space-y-3">
       {manifest.length === 0 && <EmptyState title="No students on this manifest yet" />}
 
       {manifest.map((entry) => (
-        <div key={entry.id} className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{entry.studentFullName}</p>
-              <p className="text-xs text-zinc-500">Admission #{entry.studentAdmissionNumber}</p>
+        <Card key={entry.id}>
+          <CardBody className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-(--color-text)">{entry.studentFullName}</p>
+                <p className="text-xs text-(--color-text-faint)">Admission #{entry.studentAdmissionNumber}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-(--color-text-faint)">{entry.membershipStatus}</span>
+                {canManage && (
+                  <Button variant="danger" size="sm" onClick={() => setConfirmRemoveId(entry.id)} disabled={busyEntryId === entry.id}>
+                    Remove
+                  </Button>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-zinc-500">{entry.membershipStatus}</span>
-              {canManage && (
-                <Button variant="danger" onClick={() => setConfirmRemoveId(entry.id)} disabled={busyEntryId === entry.id}>
-                  Remove
-                </Button>
-              )}
-            </div>
-          </div>
 
-          <AttendanceControls
-            tripId={tripId}
-            entry={entry}
-            canRecordAttendance={canRecordAttendance}
-            onUpdated={(updated) => onManifestChange(manifest.map((m) => (m.id === updated.id ? updated : m)))}
-          />
+            <AttendanceControls
+              tripId={tripId}
+              entry={entry}
+              canRecordAttendance={canRecordAttendance}
+              onUpdated={(updated) => onManifestChange(manifest.map((m) => (m.id === updated.id ? updated : m)))}
+            />
 
-          {canManage && (
-            <div className="mt-2 grid grid-cols-2 gap-3">
-              <FormField label="Pickup" htmlFor={`pickup-${entry.id}`}>
-                <Select
-                  id={`pickup-${entry.id}`}
-                  value={entry.pickupTripStopId ?? ''}
-                  disabled={busyEntryId === entry.id}
-                  onChange={(e) => onChangeStop(entry, 'pickupTripStopId', e.target.value)}
-                >
-                  <option value="">The school</option>
-                  {stops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
-              </FormField>
-              <FormField label="Dropoff" htmlFor={`dropoff-${entry.id}`}>
-                <Select
-                  id={`dropoff-${entry.id}`}
-                  value={entry.dropoffTripStopId ?? ''}
-                  disabled={busyEntryId === entry.id}
-                  onChange={(e) => onChangeStop(entry, 'dropoffTripStopId', e.target.value)}
-                >
-                  <option value="">The school</option>
-                  {stops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
-              </FormField>
-            </div>
-          )}
-        </div>
-      ))}
-
-      {manifestError && <p className="text-sm text-red-600 dark:text-red-400">{manifestError}</p>}
-
-      {canManage && (
-        <form onSubmit={onAdd} className="space-y-3 rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="relative">
-            <FormField label="Student" htmlFor="studentSearch">
-              <Input
-                id="studentSearch"
-                placeholder="Search by name or admission number"
-                value={selectedStudent ? selectedStudent.fullName : studentQuery}
-                onChange={(e) => onQueryChange(e.target.value)}
-              />
-            </FormField>
-            {!selectedStudent && studentResults.length > 0 && (
-              <div className="mt-1 rounded-md border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                {studentResults.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedStudent(s);
-                      setStudentResults([]);
-                    }}
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800"
+            {canManage && (
+              <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <FormField label="Pickup" htmlFor={`pickup-${entry.id}`}>
+                  <Select
+                    id={`pickup-${entry.id}`}
+                    value={entry.pickupTripStopId ?? ''}
+                    disabled={busyEntryId === entry.id}
+                    onChange={(e) => onChangeStop(entry, 'pickupTripStopId', e.target.value)}
                   >
-                    {s.fullName} · #{s.admissionNumber}
-                  </button>
-                ))}
+                    <option value="">The school</option>
+                    {stops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField label="Dropoff" htmlFor={`dropoff-${entry.id}`}>
+                  <Select
+                    id={`dropoff-${entry.id}`}
+                    value={entry.dropoffTripStopId ?? ''}
+                    disabled={busyEntryId === entry.id}
+                    onChange={(e) => onChangeStop(entry, 'dropoffTripStopId', e.target.value)}
+                  >
+                    <option value="">The school</option>
+                    {stops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
               </div>
             )}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Pickup" htmlFor="newPickup">
-              <Select id="newPickup" value={pickupStopId} onChange={(e) => setPickupStopId(e.target.value)}>
-                <option value="">The school</option>
-                {stops.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="Dropoff" htmlFor="newDropoff">
-              <Select id="newDropoff" value={dropoffStopId} onChange={(e) => setDropoffStopId(e.target.value)}>
-                <option value="">The school</option>
-                {stops.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-          </div>
-          <Button type="submit" loading={adding}>
-            Add student
-          </Button>
-        </form>
+          </CardBody>
+        </Card>
+      ))}
+
+      {manifestError && <p className="text-sm text-(--color-danger-text)">{manifestError}</p>}
+
+      {canManage && (
+        <Card>
+          <CardBody>
+            <form onSubmit={onAdd} className="space-y-3">
+              <div className="relative">
+                <FormField label="Student" htmlFor="studentSearch">
+                  <Input
+                    id="studentSearch"
+                    placeholder="Search by name or admission number"
+                    value={selectedStudent ? selectedStudent.fullName : studentQuery}
+                    onChange={(e) => onQueryChange(e.target.value)}
+                  />
+                </FormField>
+                {!selectedStudent && studentResults.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-(--radius-md) border border-(--color-border) bg-(--color-surface-raised) shadow-(--shadow-md)">
+                    {studentResults.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedStudent(s);
+                          setStudentResults([]);
+                        }}
+                        className="block w-full px-3 py-2 text-left text-sm hover:bg-(--color-surface-sunken)"
+                      >
+                        {s.fullName} · #{s.admissionNumber}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <FormField label="Pickup" htmlFor="newPickup">
+                  <Select id="newPickup" value={pickupStopId} onChange={(e) => setPickupStopId(e.target.value)}>
+                    <option value="">The school</option>
+                    {stops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField label="Dropoff" htmlFor="newDropoff">
+                  <Select id="newDropoff" value={dropoffStopId} onChange={(e) => setDropoffStopId(e.target.value)}>
+                    <option value="">The school</option>
+                    {stops.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+              </div>
+              <Button type="submit" loading={adding}>
+                Add student
+              </Button>
+            </form>
+          </CardBody>
+        </Card>
       )}
 
       <ConfirmDialog
@@ -683,54 +753,54 @@ function AttendanceControls({
   }
 
   return (
-    <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+    <div className="mt-2 border-t border-(--color-border) pt-2">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={entry.currentStatus} />
-        {entry.boardedAt && <span className="text-xs text-zinc-500">Boarded {new Date(entry.boardedAt).toLocaleTimeString()}</span>}
-        {entry.droppedOffAt && <span className="text-xs text-zinc-500">Dropped off {new Date(entry.droppedOffAt).toLocaleTimeString()}</span>}
+        {entry.boardedAt && <span className="text-xs text-(--color-text-faint)">Boarded {new Date(entry.boardedAt).toLocaleTimeString()}</span>}
+        {entry.droppedOffAt && <span className="text-xs text-(--color-text-faint)">Dropped off {new Date(entry.droppedOffAt).toLocaleTimeString()}</span>}
         {canRecordAttendance && entry.currentStatus === 'EXPECTED' && (
           <>
-            <Button variant="secondary" onClick={() => run(() => boardStudent(tripId, entry.id))} disabled={busy}>
+            <Button variant="secondary" size="sm" onClick={() => run(() => boardStudent(tripId, entry.id))} disabled={busy}>
               Board
             </Button>
-            <Button variant="secondary" onClick={() => run(() => markStudentAbsent(tripId, entry.id))} disabled={busy}>
+            <Button variant="secondary" size="sm" onClick={() => run(() => markStudentAbsent(tripId, entry.id))} disabled={busy}>
               Mark absent
             </Button>
           </>
         )}
         {canRecordAttendance && entry.currentStatus === 'BOARDED' && (
-          <Button variant="secondary" onClick={() => run(() => dropOffStudent(tripId, entry.id))} disabled={busy}>
+          <Button variant="secondary" size="sm" onClick={() => run(() => dropOffStudent(tripId, entry.id))} disabled={busy}>
             Drop off
           </Button>
         )}
-        <Button variant="secondary" onClick={toggleHistory}>
+        <Button variant="secondary" size="sm" onClick={toggleHistory}>
           {showHistory ? 'Hide history' : 'History'}
         </Button>
       </div>
 
-      {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {error && <p className="mt-1 text-sm text-(--color-danger-text)">{error}</p>}
 
       {showHistory && (
-        <div className="mt-2 space-y-2 rounded-md bg-zinc-50 p-2 text-xs dark:bg-zinc-900">
-          {historyLoading && <p className="text-zinc-500">Loading…</p>}
-          {!historyLoading && history?.length === 0 && <p className="text-zinc-500">No attendance events yet.</p>}
+        <div className="mt-2 space-y-2 rounded-(--radius-sm) bg-(--color-surface-sunken) p-2 text-xs">
+          {historyLoading && <p className="text-(--color-text-faint)">Loading…</p>}
+          {!historyLoading && history?.length === 0 && <p className="text-(--color-text-faint)">No attendance events yet.</p>}
           {history?.map((ev) => (
             <div key={ev.id}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-zinc-700 dark:text-zinc-300">
+                <span className="text-(--color-text-muted)">
                   {new Date(ev.occurredAt).toLocaleString()} — {ev.eventType}
                   {ev.tripStopName ? ` — ${ev.tripStopName}` : ''}
                   {ev.recordedByName ? ` — ${ev.recordedByName}` : ''}
                   {ev.correctsEventId ? ' (correction)' : ''}
                 </span>
                 {canRecordAttendance && (
-                  <Button variant="secondary" onClick={() => setCorrectingEventId(correctingEventId === ev.id ? null : ev.id)}>
+                  <Button variant="secondary" size="sm" onClick={() => setCorrectingEventId(correctingEventId === ev.id ? null : ev.id)}>
                     Correct
                   </Button>
                 )}
               </div>
               {correctingEventId === ev.id && (
-                <div className="mt-1 flex flex-wrap items-end gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+                <div className="mt-1 flex flex-wrap items-end gap-2 rounded-(--radius-sm) border border-(--color-border) p-2">
                   <FormField label="Corrected to" htmlFor={`correct-type-${ev.id}`}>
                     <Select id={`correct-type-${ev.id}`} value={correctType} onChange={(e) => setCorrectType(e.target.value as typeof correctType)}>
                       {CORRECTABLE_TYPES.map((t) => (

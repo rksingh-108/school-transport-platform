@@ -6,6 +6,8 @@ import { createBus } from '@/lib/api/buses';
 import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
 
 export default function NewBusPage() {
   const router = useRouter();
@@ -43,43 +45,47 @@ export default function NewBusPage() {
 
   return (
     <div className="max-w-lg">
-      <h1 className="mb-6 text-lg font-semibold text-zinc-900 dark:text-zinc-50">New bus</h1>
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        <div className="grid grid-cols-2 gap-4">
-          <FormField label="Fleet number" htmlFor="fleetNumber">
-            <Input id="fleetNumber" value={fleetNumber} onChange={(e) => setFleetNumber(e.target.value)} />
-          </FormField>
-          <FormField label="Registration number" htmlFor="registrationNumber">
-            <Input id="registrationNumber" required value={registrationNumber} onChange={(e) => setRegistrationNumber(e.target.value)} />
-          </FormField>
-        </div>
-        <FormField label="Capacity" htmlFor="capacity">
-          <Input id="capacity" type="number" min={1} max={200} required value={capacity} onChange={(e) => setCapacity(e.target.value)} />
-        </FormField>
-        <div className="grid grid-cols-3 gap-4">
-          <FormField label="Make" htmlFor="make">
-            <Input id="make" value={make} onChange={(e) => setMake(e.target.value)} />
-          </FormField>
-          <FormField label="Model" htmlFor="model">
-            <Input id="model" value={model} onChange={(e) => setModel(e.target.value)} />
-          </FormField>
-          <FormField label="Year" htmlFor="manufactureYear">
-            <Input id="manufactureYear" type="number" value={manufactureYear} onChange={(e) => setManufactureYear(e.target.value)} />
-          </FormField>
-        </div>
-        <FormField label="Notes" htmlFor="notes">
-          <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-        </FormField>
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-        <div className="flex gap-2">
-          <Button type="submit" loading={loading}>
-            Create bus
-          </Button>
-          <Button type="button" variant="secondary" onClick={() => router.back()}>
-            Cancel
-          </Button>
-        </div>
-      </form>
+      <PageHeader title="New bus" breadcrumbs={[{ label: 'Buses', href: '/dashboard/buses' }, { label: 'New' }]} />
+      <Card>
+        <CardBody>
+          <form onSubmit={onSubmit} className="space-y-4" noValidate>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <FormField label="Fleet number" htmlFor="fleetNumber">
+                <Input id="fleetNumber" value={fleetNumber} onChange={(e) => setFleetNumber(e.target.value)} />
+              </FormField>
+              <FormField label="Registration number" htmlFor="registrationNumber">
+                <Input id="registrationNumber" required value={registrationNumber} onChange={(e) => setRegistrationNumber(e.target.value)} />
+              </FormField>
+            </div>
+            <FormField label="Capacity" htmlFor="capacity">
+              <Input id="capacity" type="number" min={1} max={200} required value={capacity} onChange={(e) => setCapacity(e.target.value)} />
+            </FormField>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <FormField label="Make" htmlFor="make">
+                <Input id="make" value={make} onChange={(e) => setMake(e.target.value)} />
+              </FormField>
+              <FormField label="Model" htmlFor="model">
+                <Input id="model" value={model} onChange={(e) => setModel(e.target.value)} />
+              </FormField>
+              <FormField label="Year" htmlFor="manufactureYear">
+                <Input id="manufactureYear" type="number" value={manufactureYear} onChange={(e) => setManufactureYear(e.target.value)} />
+              </FormField>
+            </div>
+            <FormField label="Notes" htmlFor="notes">
+              <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </FormField>
+            {error && <p className="text-sm text-(--color-danger-text)">{error}</p>}
+            <div className="flex gap-2 border-t border-(--color-border) pt-4">
+              <Button type="submit" loading={loading}>
+                Create bus
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => router.back()}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </CardBody>
+      </Card>
     </div>
   );
 }

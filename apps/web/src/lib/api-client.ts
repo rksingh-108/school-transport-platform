@@ -38,11 +38,27 @@ async function rawFetch(path: string, options: RequestOptions): Promise<Response
 
 let refreshInFlight: Promise<boolean> | null = null;
 
+/**
+ * A staff and a parent refresh cookie can both be present at once (same
+ * browser, both roles used without logging out in between) — the server
+ * needs to know which one this page actually wants. There's no client-side
+ * session state to ask, only the URL, so we infer it from the route.
+ */
+function audienceHintFromLocation(): 'STAFF' | 'PARENT' | null {
+  if (typeof window === 'undefined') return null;
+  const path = window.location.pathname;
+  if (path.startsWith('/parent') || path.startsWith('/login/parent')) return 'PARENT';
+  if (path.startsWith('/dashboard') || path.startsWith('/login/staff')) return 'STAFF';
+  return null;
+}
+
 /** Deduplicated — concurrent 401s from several requests trigger exactly one refresh call. */
 async function trySilentRefresh(): Promise<boolean> {
   refreshInFlight ??= (async () => {
     try {
-      const res = await rawFetch('/auth/refresh', { method: 'POST', skipAuthRetry: true });
+      const hint = audienceHintFromLocation();
+      const path = hint ? `/auth/refresh?audience=${hint}` : '/auth/refresh';
+      const res = await rawFetch(path, { method: 'POST', skipAuthRetry: true });
       if (!res.ok) {
         setAccessToken(null);
         return false;

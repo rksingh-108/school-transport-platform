@@ -6,10 +6,15 @@ import { AI_DETECTION_TYPES, dismissAiObservation, listAiObservations, promoteAi
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/field';
-import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
+import { PageHeader } from '@/components/ui/page-header';
+import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import type { AIObservationDto } from '@school-transport/shared-types';
 
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
 
@@ -23,6 +28,7 @@ function ageLabel(occurredAt: string): string {
 }
 
 export default function AiReviewPage() {
+  const toast = useToast();
   const { principal } = useAuth();
   const canReview = principal?.type === 'STAFF' && principal.permissions.includes('ai_events.review');
 
@@ -44,6 +50,7 @@ export default function AiReviewPage() {
     setActionError(null);
     try {
       await reviewAiObservation(id);
+      toast.success('Marked reviewed');
       reload();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to mark this observation reviewed.');
@@ -60,6 +67,7 @@ export default function AiReviewPage() {
       await dismissAiObservation(confirmDismissId, reviewNote || undefined);
       setConfirmDismissId(null);
       setReviewNote('');
+      toast.success('Detection dismissed');
       reload();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to dismiss this detection.');
@@ -77,6 +85,7 @@ export default function AiReviewPage() {
       setConfirmPromoteId(null);
       setReviewNote('');
       setPromoteSeverity('');
+      toast.success('Promoted to safety event');
       reload();
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to promote this detection to a safety event — it may not be enabled for promotion, or its confidence may be below the configured minimum.');
@@ -87,22 +96,36 @@ export default function AiReviewPage() {
 
   const items = page?.data ?? [];
 
+  const columns: DataTableColumn<AIObservationDto>[] = [
+    {
+      key: 'detection',
+      header: 'Detection',
+      render: (o) => (
+        <Link href={`/dashboard/ai-observations/${o.id}`} className="font-medium text-(--color-text) hover:text-(--color-brand-text)">
+          {o.detectionType.replace(/_/g, ' ')}
+        </Link>
+      ),
+    },
+    { key: 'confidence', header: 'Confidence', render: (o) => `${(o.confidence * 100).toFixed(0)}%` },
+    { key: 'bus', header: 'Bus', render: (o) => o.busId },
+    { key: 'model', header: 'Model', render: (o) => `${o.modelName} ${o.modelVersion}` },
+    { key: 'age', header: 'Age', render: (o) => ageLabel(o.occurredAt) },
+  ];
+
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">AI Review Queue</h1>
-          <p className="text-sm text-zinc-500">
-            Candidate detections awaiting human review. AI never creates a safety event on its own — every promotion here is an explicit staff decision.
-          </p>
-        </div>
-        <Link href="/dashboard/ai-safety-policies" className="text-sm text-zinc-600 hover:underline dark:text-zinc-400">
-          Manage promotion policies
-        </Link>
-      </div>
+      <PageHeader
+        title="AI Review Queue"
+        description="Candidate detections awaiting human review. AI never creates a safety event on its own — every promotion here is an explicit staff decision."
+        actions={
+          <Link href="/dashboard/ai-safety-policies" className="text-sm text-(--color-brand-text) hover:underline">
+            Manage promotion policies
+          </Link>
+        }
+      />
 
       <div className="mb-4 flex flex-wrap gap-3">
-        <Select value={detectionType} onChange={(e) => setDetectionType(e.target.value)} className="max-w-[200px]">
+        <Select value={detectionType} onChange={(e) => setDetectionType(e.target.value)} className="max-w-[220px]">
           <option value="">All detection types</option>
           {AI_DETECTION_TYPES.map((t) => (
             <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
@@ -110,56 +133,34 @@ export default function AiReviewPage() {
         </Select>
       </div>
 
-      {actionError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{actionError}</p>}
+      {actionError && <p className="mb-3 text-sm text-(--color-danger-text)">{actionError}</p>}
 
-      {loading && <LoadingState label="Loading the review queue…" />}
+      {loading && <TableSkeleton columns={5} />}
       {!loading && !!error && <ErrorState message={error instanceof ApiError ? error.message : 'Failed to load the review queue.'} onRetry={reload} />}
       {!loading && !error && items.length === 0 && <EmptyState title="Nothing pending review" description="All candidate detections have been reviewed." />}
       {!loading && !error && items.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50 text-left text-xs uppercase text-zinc-500 dark:bg-zinc-900">
-              <tr>
-                <th className="px-4 py-2">Detection</th>
-                <th className="px-4 py-2">Confidence</th>
-                <th className="px-4 py-2">Bus</th>
-                <th className="px-4 py-2">Model</th>
-                <th className="px-4 py-2">Age</th>
-                {canReview && <th className="px-4 py-2">Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((o) => (
-                <tr key={o.id} className="border-t border-zinc-100 dark:border-zinc-800">
-                  <td className="px-4 py-2">
-                    <Link href={`/dashboard/ai-observations/${o.id}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
-                      {o.detectionType.replace(/_/g, ' ')}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-2 text-zinc-500">{(o.confidence * 100).toFixed(0)}%</td>
-                  <td className="px-4 py-2 text-zinc-500">{o.busId}</td>
-                  <td className="px-4 py-2 text-zinc-500">{o.modelName} {o.modelVersion}</td>
-                  <td className="px-4 py-2 text-zinc-500">{ageLabel(o.occurredAt)}</td>
-                  {canReview && (
-                    <td className="px-4 py-2">
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="secondary" disabled={busyId === o.id} onClick={() => onMarkReviewed(o.id)}>
-                          Mark reviewed
-                        </Button>
-                        <Button variant="secondary" disabled={busyId === o.id} onClick={() => setConfirmDismissId(o.id)}>
-                          Dismiss detection
-                        </Button>
-                        <Button variant="primary" disabled={busyId === o.id} onClick={() => setConfirmPromoteId(o.id)}>
-                          Promote to safety event
-                        </Button>
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={columns}
+          rows={items}
+          getRowKey={(o) => o.id}
+          renderActions={
+            canReview
+              ? (o) => (
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button variant="secondary" size="sm" disabled={busyId === o.id} onClick={() => onMarkReviewed(o.id)}>
+                      Mark reviewed
+                    </Button>
+                    <Button variant="secondary" size="sm" disabled={busyId === o.id} onClick={() => setConfirmDismissId(o.id)}>
+                      Dismiss
+                    </Button>
+                    <Button variant="primary" size="sm" disabled={busyId === o.id} onClick={() => setConfirmPromoteId(o.id)}>
+                      Promote
+                    </Button>
+                  </div>
+                )
+              : undefined
+          }
+        />
       )}
 
       <ConfirmDialog
@@ -171,7 +172,7 @@ export default function AiReviewPage() {
         onConfirm={onDismiss}
         onCancel={() => { setConfirmDismissId(null); setReviewNote(''); }}
       >
-        <label className="block text-sm text-zinc-600 dark:text-zinc-400">
+        <label className="block text-sm text-(--color-text-muted)">
           Note (optional)
           <Input className="mt-1" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="Why is this not a real safety concern?" />
         </label>
@@ -187,7 +188,7 @@ export default function AiReviewPage() {
         onCancel={() => { setConfirmPromoteId(null); setReviewNote(''); setPromoteSeverity(''); }}
       >
         <div className="space-y-3">
-          <label className="block text-sm text-zinc-600 dark:text-zinc-400">
+          <label className="block text-sm text-(--color-text-muted)">
             Severity override (optional — otherwise uses this school&apos;s configured default)
             <Select className="mt-1" value={promoteSeverity} onChange={(e) => setPromoteSeverity(e.target.value as typeof promoteSeverity)}>
               <option value="">Use policy default</option>
@@ -196,7 +197,7 @@ export default function AiReviewPage() {
               ))}
             </Select>
           </label>
-          <label className="block text-sm text-zinc-600 dark:text-zinc-400">
+          <label className="block text-sm text-(--color-text-muted)">
             Note (optional)
             <Input className="mt-1" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="What did you observe in the footage?" />
           </label>

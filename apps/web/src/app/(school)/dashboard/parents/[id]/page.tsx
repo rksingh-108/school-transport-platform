@@ -3,14 +3,18 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { ParentDto, ParentStudentLinkDto, StudentDto } from '@school-transport/shared-types';
+import { ArrowLeft } from 'lucide-react';
 import { getParent, linkStudentToParent, listParentChildren, unlinkParentStudent, updateParent, verifyParentStudentLink } from '@/lib/api/parents';
 import { listStudents } from '@/lib/api/students';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
 import { Badge, StatusBadge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardHeader, CardBody } from '@/components/ui/card';
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
@@ -36,6 +40,7 @@ export default function ParentDetailPage() {
 
 function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLinks: ParentStudentLinkDto[] }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canUpdate = principal?.type === 'STAFF' && principal.permissions.includes('parents.update');
   const canManageLinks = principal?.type === 'STAFF' && principal.permissions.includes('parents.manage_relationships');
@@ -83,6 +88,7 @@ function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLi
     try {
       const updated = await updateParent(current.id, { fullName, email: email || undefined });
       setCurrent(updated);
+      toast.success('Profile saved');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -98,6 +104,7 @@ function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLi
       setLinks((prev) => [link, ...prev]);
       setStudentQuery('');
       setStudentResults([]);
+      toast.success('Student linked');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to link student.');
     } finally {
@@ -111,6 +118,7 @@ function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLi
     try {
       const updated = await verifyParentStudentLink(linkId);
       setLinks((prev) => prev.map((l) => (l.id === linkId ? updated : l)));
+      toast.success('Link verified');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to verify link.');
     } finally {
@@ -126,6 +134,7 @@ function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLi
       await unlinkParentStudent(unlinkTarget.id);
       setLinks((prev) => prev.filter((l) => l.id !== unlinkTarget.id));
       setUnlinkTarget(null);
+      toast.success('Student unlinked');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to unlink student.');
     } finally {
@@ -134,91 +143,93 @@ function ParentEditForm({ parent, initialLinks }: { parent: ParentDto; initialLi
   }
 
   return (
-    <div className="max-w-lg space-y-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.fullName}</h1>
-          <p className="text-sm text-zinc-500">{current.phone}</p>
-        </div>
-        <StatusBadge status={current.status} />
-      </div>
-
-      <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Profile</h2>
-        <FormField label="Full name" htmlFor="fullName">
-          <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
-        </FormField>
-        <FormField label="Email" htmlFor="email">
-          <Input id="email" type="email" value={email} disabled={!canUpdate} onChange={(e) => setEmail(e.target.value)} />
-        </FormField>
-        {canUpdate && (
-          <Button onClick={onSaveProfile} loading={saving}>
-            Save profile
-          </Button>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Linked children</h2>
-        {links.length === 0 && <EmptyState title="No linked children yet" />}
-        {links.map((link) => (
-          <div key={link.id} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-            <div>
-              <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{link.studentFullName}</p>
-              <p className="text-xs text-zinc-500">{link.relationship}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              {link.verified ? <Badge tone="success">Verified</Badge> : <Badge tone="warning">Unverified</Badge>}
-              {canManageLinks && !link.verified && (
-                <Button variant="secondary" onClick={() => onVerify(link.id)} disabled={busy}>
-                  Verify
-                </Button>
-              )}
-              {canManageLinks && (
-                <Button variant="danger" onClick={() => setUnlinkTarget(link)} disabled={busy}>
-                  Unlink
-                </Button>
-              )}
-            </div>
+    <div className="max-w-lg space-y-6">
+      <PageHeader
+        breadcrumbs={[{ label: 'Parents', href: '/dashboard/parents' }, { label: current.fullName }]}
+        title={current.fullName}
+        description={current.phone}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
           </div>
-        ))}
+        }
+      />
 
-        {canManageLinks && (
-          <div className="relative pt-2">
-            <FormField label="Link a student" htmlFor="studentSearch">
-              <Input
-                id="studentSearch"
-                placeholder="Search by name or admission number"
-                value={studentQuery}
-                onChange={(e) => onQueryChange(e.target.value)}
-              />
-            </FormField>
-            {studentResults.length > 0 && (
-              <div className="mt-1 rounded-md border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                {studentResults.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    disabled={linking}
-                    onClick={() => onLink(s)}
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800"
-                  >
-                    {s.fullName} · #{s.admissionNumber}
-                  </button>
-                ))}
+      <Card>
+        <CardHeader title="Profile" />
+        <CardBody className="space-y-4">
+          <FormField label="Full name" htmlFor="fullName">
+            <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
+          </FormField>
+          <FormField label="Email" htmlFor="email">
+            <Input id="email" type="email" value={email} disabled={!canUpdate} onChange={(e) => setEmail(e.target.value)} />
+          </FormField>
+          {canUpdate && (
+            <Button onClick={onSaveProfile} loading={saving}>
+              Save profile
+            </Button>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Linked children" />
+        <CardBody className="space-y-3">
+          {links.length === 0 && <EmptyState title="No linked children yet" />}
+          {links.map((link) => (
+            <div key={link.id} className="flex flex-wrap items-center justify-between gap-2 rounded-(--radius-md) border border-(--color-border) px-3 py-2">
+              <div>
+                <p className="text-sm font-medium text-(--color-text)">{link.studentFullName}</p>
+                <p className="text-xs text-(--color-text-faint)">{link.relationship}</p>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+              <div className="flex items-center gap-2">
+                {link.verified ? <Badge tone="success" dot>Verified</Badge> : <Badge tone="warning" dot>Unverified</Badge>}
+                {canManageLinks && !link.verified && (
+                  <Button variant="secondary" size="sm" onClick={() => onVerify(link.id)} disabled={busy}>
+                    Verify
+                  </Button>
+                )}
+                {canManageLinks && (
+                  <Button variant="danger" size="sm" onClick={() => setUnlinkTarget(link)} disabled={busy}>
+                    Unlink
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
 
-      {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
+          {canManageLinks && (
+            <div className="relative pt-2">
+              <FormField label="Link a student" htmlFor="studentSearch">
+                <Input
+                  id="studentSearch"
+                  placeholder="Search by name or admission number"
+                  value={studentQuery}
+                  onChange={(e) => onQueryChange(e.target.value)}
+                />
+              </FormField>
+              {studentResults.length > 0 && (
+                <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-(--radius-md) border border-(--color-border) bg-(--color-surface-raised) shadow-(--shadow-md)">
+                  {studentResults.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      disabled={linking}
+                      onClick={() => onLink(s)}
+                      className="block w-full px-3 py-2 text-left text-sm hover:bg-(--color-surface-sunken)"
+                    >
+                      {s.fullName} · #{s.admissionNumber}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
-      <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-        <Button variant="secondary" onClick={() => router.back()}>
-          Back
-        </Button>
-      </div>
+      {actionError && <p className="text-sm text-(--color-danger-text)">{actionError}</p>}
 
       <ConfirmDialog
         open={!!unlinkTarget}

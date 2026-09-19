@@ -2,137 +2,96 @@
 
 import { useCallback, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import type { ParentChildTransportUpdatedEvent, ParentChildWithTransportDto } from '@school-transport/shared-types';
+import type { ParentChildTransportUpdatedEvent } from '@school-transport/shared-types';
+import { ChevronRight, Wifi, WifiOff } from 'lucide-react';
 import { getMyChildren } from '@/lib/api/parents';
-import { getMyUnreadCount } from '@/lib/api/notifications';
 import { useParentSocket } from '@/lib/realtime/parent-socket';
-import { RequireAuth } from '@/components/require-auth';
-import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/badge';
-import { NotificationBell } from '@/components/notification-bell';
+import { Avatar } from '@/components/ui/avatar';
+import { BoardingStepper } from '@/components/parent-boarding-stepper';
 import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
 
-/** Plain-language status text — no "TripStudent"/"deviceId"/technical terms ever surface here. */
-function transportHeadline(transport: ParentChildWithTransportDto['transport']): string {
-  if (!transport.tripStatus) return 'No trip today';
-  if (transport.tripStatus === 'CANCELLED') return "Today's trip was cancelled";
-  if (transport.tripStatus === 'NO_SHOW') return 'Marked as no-show';
-  if (transport.tripStatus === 'SCHEDULED' || transport.tripStatus === 'READY') return 'Trip scheduled';
-  if (transport.tripStatus === 'COMPLETED') return 'Trip completed';
-  switch (transport.attendanceStatus) {
-    case 'BOARDED':
-      return 'Boarded';
-    case 'DROPPED_OFF':
-      return 'Dropped off';
-    case 'ABSENT':
-      return 'Marked absent';
-    default:
-      return 'Not yet boarded';
-  }
-}
-
-function ParentHome() {
-  const { principal, logout } = useAuth();
-  const router = useRouter();
+export default function ParentHome() {
   const { data: children, error, loading, reload } = useAsync(() => getMyChildren(), []);
-  const { data: unread } = useAsync(() => getMyUnreadCount(), []);
   const [live, setLive] = useState<Record<string, ParentChildTransportUpdatedEvent>>({});
-  const [liveUnreadDelta, setLiveUnreadDelta] = useState(0);
 
   const onChildUpdate = useCallback((event: ParentChildTransportUpdatedEvent) => {
     setLive((prev) => ({ ...prev, [event.childId]: event }));
   }, []);
-  const onNotification = useCallback(() => {
-    setLiveUnreadDelta((prev) => prev + 1);
-  }, []);
-  const { status: socketStatus } = useParentSocket(onChildUpdate, onNotification);
-  const unreadCount = (unread?.count ?? 0) + liveUnreadDelta;
-
-  if (!principal || principal.type !== 'PARENT') return null;
-
-  async function onLogout() {
-    await logout();
-    router.replace('/login/parent');
-  }
+  const { status: socketStatus } = useParentSocket(onChildUpdate);
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{principal.fullName}</h1>
-          <p className="text-sm text-zinc-500">{principal.school.name}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <NotificationBell href="/parent/notifications" unreadCount={unreadCount} />
-          <Button variant="secondary" onClick={onLogout}>
-            Sign out
-          </Button>
-        </div>
+    <div>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-(--color-text)">My Children</h1>
+        {children && children.length > 0 && (
+          <span className="flex items-center gap-1.5 text-xs text-(--color-text-faint)">
+            {socketStatus === 'connected' ? (
+              <>
+                <Wifi className="h-3.5 w-3.5 text-(--color-success-solid)" /> Live
+              </>
+            ) : socketStatus === 'reconnecting' ? (
+              <>
+                <WifiOff className="h-3.5 w-3.5 text-(--color-warning-solid)" /> Reconnecting…
+              </>
+            ) : null}
+          </span>
+        )}
       </div>
 
-      <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-50">My Children</h2>
       {loading && <LoadingState label="Loading your children…" />}
       {!loading && !!error && (
         <ErrorState message={error instanceof ApiError ? error.message : 'Failed to load your children.'} onRetry={reload} />
       )}
       {!loading && !error && children && children.length === 0 && (
-        <EmptyState title="No children are currently linked to your account." description="Contact your school if this doesn't look right." />
+        <EmptyState title="No children linked yet" description="Contact your school if this doesn't look right." />
       )}
       {!loading && !error && children && children.length > 0 && (
         <div className="space-y-3">
           {children.map((child) => {
             const liveUpdate = live[child.id];
             const transport = liveUpdate
-              ? { tripStatus: liveUpdate.tripStatus, attendanceStatus: liveUpdate.attendanceStatus, busDisplayName: liveUpdate.busDisplayName, freshness: liveUpdate.location.freshness }
+              ? {
+                  tripStatus: liveUpdate.tripStatus,
+                  attendanceStatus: liveUpdate.attendanceStatus,
+                  busDisplayName: liveUpdate.busDisplayName,
+                  freshness: liveUpdate.location.freshness,
+                }
               : child.transport;
             return (
               <Link
                 key={child.id}
                 href={`/parent/children/${child.id}`}
-                className="block rounded-lg border border-zinc-200 px-4 py-4 dark:border-zinc-800"
+                className="group block rounded-(--radius-lg) border border-(--color-border) bg-(--color-surface) p-4 shadow-(--shadow-xs) transition-all duration-200 hover:-translate-y-0.5 hover:shadow-(--shadow-md)"
               >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-base font-semibold text-zinc-900 dark:text-zinc-100">{child.fullName}</p>
-                    <p className="text-xs text-zinc-500">
-                      {child.grade ? `Grade ${child.grade}` : 'Grade —'} {child.section ? `· Section ${child.section}` : ''}
-                    </p>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Avatar name={child.fullName} size="md" />
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-semibold text-(--color-text)">{child.fullName}</p>
+                      <p className="text-xs text-(--color-text-faint)">
+                        {child.grade ? `Grade ${child.grade}` : 'Grade —'} {child.section ? `· Section ${child.section}` : ''}
+                      </p>
+                    </div>
                   </div>
-                  {transport.tripStatus === 'IN_PROGRESS' && transport.attendanceStatus && (
-                    <StatusBadge status={transport.attendanceStatus} />
-                  )}
+                  <ChevronRight className="h-4 w-4 shrink-0 text-(--color-text-faint) transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-(--color-brand-text)" />
                 </div>
-                <div className="mt-3 flex items-center justify-between">
-                  <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{transportHeadline(transport)}</p>
-                  {transport.busDisplayName && <p className="text-xs text-zinc-500">{transport.busDisplayName}</p>}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {transport.tripStatus && <StatusBadge status={transport.tripStatus} dot />}
+                  {transport.attendanceStatus && transport.tripStatus === 'IN_PROGRESS' && <StatusBadge status={transport.attendanceStatus} />}
+                  {transport.tripStatus === 'IN_PROGRESS' && transport.freshness && <StatusBadge status={transport.freshness} />}
                 </div>
-                {transport.tripStatus === 'IN_PROGRESS' && transport.freshness && (
-                  <div className="mt-2">
-                    <StatusBadge status={transport.freshness} />
-                  </div>
-                )}
+                {transport.busDisplayName && <p className="mt-2 text-xs text-(--color-text-faint)">{transport.busDisplayName}</p>}
+                <div className="mt-2 border-t border-(--color-border) pt-3">
+                  <BoardingStepper attendanceStatus={transport.attendanceStatus} tripStatus={transport.tripStatus} />
+                </div>
               </Link>
             );
           })}
         </div>
       )}
-      {!loading && !error && children && children.length > 0 && (
-        <p className="mt-6 text-center text-xs text-zinc-400">
-          {socketStatus === 'connected' ? 'Live updates on' : socketStatus === 'reconnecting' ? 'Reconnecting…' : ''}
-        </p>
-      )}
     </div>
-  );
-}
-
-export default function ParentPage() {
-  return (
-    <RequireAuth audience="PARENT">
-      <ParentHome />
-    </RequireAuth>
   );
 }

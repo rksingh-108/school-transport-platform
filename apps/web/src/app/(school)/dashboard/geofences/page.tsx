@@ -5,11 +5,17 @@ import { archiveGeofence, createGeofence, GEOFENCE_TYPES, listGeofences } from '
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { FormField, Input, Select } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
-import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
+import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import type { GeofenceDto } from '@school-transport/shared-types';
 
 /**
  * No map — coordinates/radius shown and entered as plain numbers, the same
@@ -20,6 +26,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
  * RouteStop.latitude/longitude/radiusMeters.
  */
 export default function GeofencesPage() {
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('geofences.manage');
 
@@ -48,6 +55,7 @@ export default function GeofencesPage() {
       setLongitude('');
       setRadiusMeters('150');
       setShowCreate(false);
+      toast.success('Geofence created');
       reload();
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Unable to create geofence.');
@@ -62,9 +70,10 @@ export default function GeofencesPage() {
     try {
       await archiveGeofence(confirmArchiveId);
       setConfirmArchiveId(null);
+      toast.success('Geofence archived');
       reload();
-    } catch {
-      // surfaced via reload's own error state if it recurs
+    } catch (err) {
+      toast.error('Unable to archive geofence', err instanceof ApiError ? err.message : undefined);
     } finally {
       setArchiving(false);
     }
@@ -72,46 +81,56 @@ export default function GeofencesPage() {
 
   const items = page?.data ?? [];
 
+  const columns: DataTableColumn<GeofenceDto>[] = [
+    { key: 'name', header: 'Name', render: (g) => <span className="font-medium text-(--color-text)">{g.name}</span> },
+    { key: 'type', header: 'Type', render: (g) => g.type },
+    { key: 'coords', header: 'Coordinates', render: (g) => `${g.latitude.toFixed(5)}, ${g.longitude.toFixed(5)}` },
+    { key: 'radius', header: 'Radius', render: (g) => `${g.radiusMeters}m` },
+    { key: 'status', header: 'Status', render: (g) => <StatusBadge status={g.status} /> },
+  ];
+
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Geofences</h1>
-          <p className="text-sm text-zinc-500">Standalone zones — attach a safety rule to monitor entry/exit.</p>
-        </div>
-        {canManage && <Button onClick={() => setShowCreate((v) => !v)}>{showCreate ? 'Cancel' : 'New geofence'}</Button>}
-      </div>
+      <PageHeader
+        title="Geofences"
+        description="Standalone zones — attach a safety rule to monitor entry/exit."
+        actions={canManage && <Button onClick={() => setShowCreate((v) => !v)}>{showCreate ? 'Cancel' : 'New geofence'}</Button>}
+      />
 
       {showCreate && canManage && (
-        <form onSubmit={onCreate} className="mb-6 grid grid-cols-2 gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-          <FormField label="Name" htmlFor="name">
-            <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
-          </FormField>
-          <FormField label="Type" htmlFor="type">
-            <Select id="type" value={type} onChange={(e) => setType(e.target.value as typeof type)}>
-              {GEOFENCE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </Select>
-          </FormField>
-          <FormField label="Latitude" htmlFor="latitude">
-            <Input id="latitude" type="number" step="any" required value={latitude} onChange={(e) => setLatitude(e.target.value)} />
-          </FormField>
-          <FormField label="Longitude" htmlFor="longitude">
-            <Input id="longitude" type="number" step="any" required value={longitude} onChange={(e) => setLongitude(e.target.value)} />
-          </FormField>
-          <FormField label="Radius (meters)" htmlFor="radiusMeters">
-            <Input id="radiusMeters" type="number" min={10} max={5000} required value={radiusMeters} onChange={(e) => setRadiusMeters(e.target.value)} />
-          </FormField>
-          <div className="col-span-2 flex items-center gap-3">
-            <Button type="submit" loading={creating}>Create</Button>
-            {createError && <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>}
-          </div>
-        </form>
+        <Card className="mb-6">
+          <CardBody>
+            <form onSubmit={onCreate} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormField label="Name" htmlFor="name">
+                <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
+              </FormField>
+              <FormField label="Type" htmlFor="type">
+                <Select id="type" value={type} onChange={(e) => setType(e.target.value as typeof type)}>
+                  {GEOFENCE_TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Latitude" htmlFor="latitude">
+                <Input id="latitude" type="number" step="any" required value={latitude} onChange={(e) => setLatitude(e.target.value)} />
+              </FormField>
+              <FormField label="Longitude" htmlFor="longitude">
+                <Input id="longitude" type="number" step="any" required value={longitude} onChange={(e) => setLongitude(e.target.value)} />
+              </FormField>
+              <FormField label="Radius (meters)" htmlFor="radiusMeters">
+                <Input id="radiusMeters" type="number" min={10} max={5000} required value={radiusMeters} onChange={(e) => setRadiusMeters(e.target.value)} />
+              </FormField>
+              <div className="sm:col-span-2 flex items-center gap-3">
+                <Button type="submit" loading={creating}>Create</Button>
+                {createError && <p className="text-sm text-(--color-danger-text)">{createError}</p>}
+              </div>
+            </form>
+          </CardBody>
+        </Card>
       )}
 
       <div className="mb-4 flex gap-3">
-        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="max-w-[160px]">
+        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="max-w-[180px]">
           <option value="">All statuses</option>
           <option value="ACTIVE">Active</option>
           <option value="INACTIVE">Inactive</option>
@@ -119,42 +138,25 @@ export default function GeofencesPage() {
         </Select>
       </div>
 
-      {loading && <LoadingState label="Loading geofences…" />}
+      {loading && <TableSkeleton columns={5} />}
       {!loading && !!error && <ErrorState message={error instanceof ApiError ? error.message : 'Failed to load geofences.'} onRetry={reload} />}
       {!loading && !error && items.length === 0 && <EmptyState title="No geofences found" />}
       {!loading && !error && items.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50 text-left text-xs uppercase text-zinc-500 dark:bg-zinc-900">
-              <tr>
-                <th className="px-4 py-2">Name</th>
-                <th className="px-4 py-2">Type</th>
-                <th className="px-4 py-2">Coordinates</th>
-                <th className="px-4 py-2">Radius</th>
-                <th className="px-4 py-2">Status</th>
-                {canManage && <th className="px-4 py-2" />}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((g) => (
-                <tr key={g.id} className="border-t border-zinc-100 dark:border-zinc-800">
-                  <td className="px-4 py-2 font-medium text-zinc-900 dark:text-zinc-100">{g.name}</td>
-                  <td className="px-4 py-2">{g.type}</td>
-                  <td className="px-4 py-2 text-zinc-500">{g.latitude.toFixed(5)}, {g.longitude.toFixed(5)}</td>
-                  <td className="px-4 py-2 text-zinc-500">{g.radiusMeters}m</td>
-                  <td className="px-4 py-2"><StatusBadge status={g.status} /></td>
-                  {canManage && (
-                    <td className="px-4 py-2">
-                      {g.status !== 'ARCHIVED' && (
-                        <Button variant="danger" onClick={() => setConfirmArchiveId(g.id)}>Archive</Button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={columns}
+          rows={items}
+          getRowKey={(g) => g.id}
+          renderActions={
+            canManage
+              ? (g) =>
+                  g.status !== 'ARCHIVED' && (
+                    <Button variant="danger" size="sm" onClick={() => setConfirmArchiveId(g.id)}>
+                      Archive
+                    </Button>
+                  )
+              : undefined
+          }
+        />
       )}
 
       <ConfirmDialog

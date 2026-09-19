@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { BusDto, BusDeviceDto, BusLocationDto, CameraDto } from '@school-transport/shared-types';
+import { ArrowLeft, MapPin, Plus } from 'lucide-react';
 import {
   archiveBus,
   deactivateDevice,
@@ -26,11 +27,16 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input, Select } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
+import { Tabs, type TabItem } from '@/components/ui/tabs';
 import { LoadingState, ErrorState, EmptyState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { LiveMap } from '@/components/ui/map/live-map';
 
 const DEVICE_TYPES = ['GPS_TRACKER', 'EDGE_COMPUTER', 'NETWORK_GATEWAY'] as const;
 
@@ -84,6 +90,7 @@ function BusEditForm({
   initialCameras: CameraDto[] | null;
 }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('buses.manage');
   const canManageCameras = principal?.type === 'STAFF' && principal.permissions.includes('camera.manage');
@@ -139,6 +146,7 @@ function BusEditForm({
         status,
       });
       setCurrent(updated);
+      toast.success('Bus details saved');
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -152,6 +160,7 @@ function BusEditForm({
       const updated = await archiveBus(current.id);
       setCurrent(updated);
       setConfirmArchive(false);
+      toast.success('Bus retired');
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Unable to archive bus.');
     } finally {
@@ -167,6 +176,7 @@ function BusEditForm({
       const device = await registerDevice(current.id, { deviceType, externalDeviceId });
       setDevices((prev) => [device, ...prev]);
       setExternalDeviceId('');
+      toast.success('Device registered');
     } catch (err) {
       setDeviceError(err instanceof ApiError ? err.message : 'Unable to register device.');
     } finally {
@@ -232,6 +242,7 @@ function BusEditForm({
       setCameraCode('');
       setCameraName('');
       setCameraSerialNumber('');
+      toast.success('Camera added');
     } catch (err) {
       setCameraError(err instanceof ApiError ? err.message : 'Unable to create camera.');
     } finally {
@@ -259,6 +270,7 @@ function BusEditForm({
       const updated = await archiveCamera(confirmArchiveCamera.id);
       setCameras((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       setConfirmArchiveCamera(null);
+      toast.success('Camera retired');
     } catch (err) {
       setCameraError(err instanceof ApiError ? err.message : 'Unable to archive camera.');
     } finally {
@@ -294,19 +306,10 @@ function BusEditForm({
     }
   }
 
-  return (
-    <div className="max-w-lg space-y-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.registrationNumber}</h1>
-          <p className="text-sm text-zinc-500">{current.fleetNumber ? `Fleet #${current.fleetNumber}` : 'No fleet number'}</p>
-        </div>
-        <StatusBadge status={current.status} />
-      </div>
-
-      <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Bus details</h2>
-        <div className="grid grid-cols-2 gap-4">
+  const overviewTab = (
+    <Card>
+      <CardBody className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Fleet number" htmlFor="fleetNumber">
             <Input id="fleetNumber" value={fleetNumber} disabled={!canManage} onChange={(e) => setFleetNumber(e.target.value)} />
           </FormField>
@@ -322,7 +325,7 @@ function BusEditForm({
         <FormField label="Capacity" htmlFor="capacity">
           <Input id="capacity" type="number" value={capacity} disabled={!canManage} onChange={(e) => setCapacity(e.target.value)} />
         </FormField>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Make" htmlFor="make">
             <Input id="make" value={make} disabled={!canManage} onChange={(e) => setMake(e.target.value)} />
           </FormField>
@@ -331,13 +334,8 @@ function BusEditForm({
           </FormField>
         </div>
         {current.status !== 'RETIRED' && (
-          <FormField label="Status" htmlFor="status">
-            <Select
-              id="status"
-              value={status}
-              disabled={!canManage}
-              onChange={(e) => setStatus(e.target.value as typeof status)}
-            >
+          <FormField label="Operational status" htmlFor="status">
+            <Select id="status" value={status} disabled={!canManage} onChange={(e) => setStatus(e.target.value as typeof status)}>
               <option value="ACTIVE">Active</option>
               <option value="INACTIVE">Inactive</option>
               <option value="MAINTENANCE">Maintenance</option>
@@ -347,60 +345,35 @@ function BusEditForm({
         <FormField label="Notes" htmlFor="notes">
           <Input id="notes" value={notes} disabled={!canManage} onChange={(e) => setNotes(e.target.value)} />
         </FormField>
-        {saveError && <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>}
-        <div className="flex justify-between">
-          <div className="flex gap-2">
-            {canManage && current.status !== 'RETIRED' && (
-              <Button onClick={onSave} loading={saving}>
-                Save changes
-              </Button>
-            )}
-            <Button variant="secondary" onClick={() => router.back()}>
-              Back
+        {saveError && <p className="text-sm text-(--color-danger-text)">{saveError}</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-(--color-border) pt-4">
+          {canManage && current.status !== 'RETIRED' && (
+            <Button onClick={onSave} loading={saving}>
+              Save changes
             </Button>
-          </div>
+          )}
           {canManage && current.status !== 'RETIRED' && (
             <Button variant="danger" onClick={() => setConfirmArchive(true)}>
               Retire bus
             </Button>
           )}
         </div>
-      </div>
+      </CardBody>
+    </Card>
+  );
 
-      <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Location</h2>
-        {location && (location.latitude !== null || location.deviceLastSeenAt) ? (
-          <div className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-            <div>
-              <p className="text-sm text-zinc-900 dark:text-zinc-100">
-                {location.latitude !== null && location.longitude !== null
-                  ? `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`
-                  : 'No fix received yet'}
-                {location.speedKmh !== null ? ` · ${location.speedKmh.toFixed(0)} km/h` : ''}
-              </p>
-              <p className="text-xs text-zinc-500">
-                Last fix: {location.recordedAt ? new Date(location.recordedAt).toLocaleString() : 'Never'}
-                {' · '}Device last seen: {location.deviceLastSeenAt ? new Date(location.deviceLastSeenAt).toLocaleString() : 'Never'}
-              </p>
-            </div>
-            <StatusBadge status={location.freshness} />
-          </div>
-        ) : (
-          <EmptyState title="No telemetry yet" description="This bus has not reported a GPS position." />
-        )}
-      </div>
-
-      <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Devices</h2>
-        {devices.length === 0 && <EmptyState title="No devices registered" />}
-        {devices.map((d) => (
-          <div key={d.id} className="space-y-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-            <div className="flex items-center justify-between">
+  const devicesTab = (
+    <div className="space-y-3">
+      {devices.length === 0 && <EmptyState title="No devices registered" />}
+      {devices.map((d) => (
+        <Card key={d.id}>
+          <CardBody className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                <p className="text-sm font-medium text-(--color-text)">
                   {d.deviceType.replace('_', ' ')} · {d.externalDeviceId}
                 </p>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-(--color-text-faint)">
                   Last seen: {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : 'Never'}
                   {d.firmwareVersion ? ` · Firmware ${d.firmwareVersion}` : ''}
                   {d.deviceType === 'GPS_TRACKER' || d.deviceType === 'EDGE_COMPUTER'
@@ -408,117 +381,126 @@ function BusEditForm({
                     : ''}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={d.status} />
                 {canManage && (d.deviceType === 'GPS_TRACKER' || d.deviceType === 'EDGE_COMPUTER') && d.status !== 'INACTIVE' && (
-                  <Button variant="secondary" onClick={() => onRotateCredential(d.id)} disabled={busyDeviceId === d.id}>
+                  <Button variant="secondary" size="sm" onClick={() => onRotateCredential(d.id)} disabled={busyDeviceId === d.id}>
                     {d.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
                   </Button>
                 )}
                 {canManage && d.status === 'ACTIVE' && (
-                  <Button variant="secondary" onClick={() => onMarkFaulty(d.id)} disabled={busyDeviceId === d.id}>
+                  <Button variant="secondary" size="sm" onClick={() => onMarkFaulty(d.id)} disabled={busyDeviceId === d.id}>
                     Mark faulty
                   </Button>
                 )}
                 {canManage && d.status !== 'INACTIVE' && (
-                  <Button variant="danger" onClick={() => onDeactivateDevice(d.id)} disabled={busyDeviceId === d.id}>
+                  <Button variant="danger" size="sm" onClick={() => onDeactivateDevice(d.id)} disabled={busyDeviceId === d.id}>
                     Deactivate
                   </Button>
                 )}
               </div>
             </div>
             {issuedCredential?.deviceId === d.id && (
-              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              <div className="rounded-(--radius-sm) border border-(--color-warning-border) bg-(--color-warning-bg) px-3 py-2 text-xs text-(--color-warning-text)">
                 <p className="font-medium">Copy this credential now — it will not be shown again:</p>
                 <code className="mt-1 block break-all font-mono">{issuedCredential.token}</code>
               </div>
             )}
-          </div>
-        ))}
+          </CardBody>
+        </Card>
+      ))}
 
-        {canManage && (
-          <form onSubmit={onRegisterDevice} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 pt-2">
-            <FormField label="Device type" htmlFor="deviceType">
-              <Select id="deviceType" value={deviceType} onChange={(e) => setDeviceType(e.target.value as typeof deviceType)}>
-                {DEVICE_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t.replace('_', ' ')}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            <FormField label="Device identifier" htmlFor="externalDeviceId">
-              <Input id="externalDeviceId" required value={externalDeviceId} onChange={(e) => setExternalDeviceId(e.target.value)} />
-            </FormField>
-            <Button type="submit" loading={registering}>
-              Add
-            </Button>
-          </form>
-        )}
-        {deviceError && <p className="text-sm text-red-600 dark:text-red-400">{deviceError}</p>}
-      </div>
+      {canManage && (
+        <Card>
+          <CardBody>
+            <form onSubmit={onRegisterDevice} className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_1fr_auto]">
+              <FormField label="Device type" htmlFor="deviceType">
+                <Select id="deviceType" value={deviceType} onChange={(e) => setDeviceType(e.target.value as typeof deviceType)}>
+                  {DEVICE_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t.replace('_', ' ')}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Device identifier" htmlFor="externalDeviceId">
+                <Input id="externalDeviceId" required value={externalDeviceId} onChange={(e) => setExternalDeviceId(e.target.value)} />
+              </FormField>
+              <Button type="submit" icon={Plus} loading={registering}>
+                Add
+              </Button>
+            </form>
+          </CardBody>
+        </Card>
+      )}
+      {deviceError && <p className="text-sm text-(--color-danger-text)">{deviceError}</p>}
+    </div>
+  );
 
-      {canReadCameras && (
-        <div className="space-y-3 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Cameras</h2>
-          {cameras.length === 0 && <EmptyState title="No cameras on this bus" />}
-          {cameras.map((c) => (
-            <div key={c.id} className="space-y-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                    {c.name} · {c.position === 'CUSTOM' ? c.customPositionLabel : c.position}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    {c.cameraCode} · Serial {c.serialNumber}
-                    {c.firmwareVersion ? ` · Firmware ${c.firmwareVersion}` : ''}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    Last seen: {c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : 'Never'}
-                    {' · '}Credential: {c.credentialSetAt ? `issued ${new Date(c.credentialSetAt).toLocaleDateString()}` : 'not issued'}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge status={c.connectivity} />
-                  <StatusBadge status={c.status} />
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="secondary" onClick={() => onViewStream(c.id)} disabled={busyCameraId === c.id}>
-                  View stream
-                </Button>
-                {canManageCameras && c.status !== 'RETIRED' && (
-                  <Button variant="secondary" onClick={() => onRotateCameraCredential(c.id)} disabled={busyCameraId === c.id}>
-                    {c.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
-                  </Button>
-                )}
-                {canManageCameras && c.status === 'ACTIVE' && (
-                  <Button variant="secondary" onClick={() => onMarkCameraFault(c.id)} disabled={busyCameraId === c.id}>
-                    Mark fault
-                  </Button>
-                )}
-                {canManageCameras && c.status !== 'RETIRED' && (
-                  <Button variant="danger" onClick={() => setConfirmArchiveCamera(c)} disabled={busyCameraId === c.id}>
-                    Retire
-                  </Button>
-                )}
-              </div>
-              {streamMessage?.cameraId === c.id && (
-                <p className="rounded-md bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                  {streamMessage.message}
+  const camerasTab = (
+    <div className="space-y-3">
+      {cameras.length === 0 && <EmptyState title="No cameras on this bus" />}
+      {cameras.map((c) => (
+        <Card key={c.id}>
+          <CardBody className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-(--color-text)">
+                  {c.name} · {c.position === 'CUSTOM' ? c.customPositionLabel : c.position}
                 </p>
+                <p className="text-xs text-(--color-text-faint)">
+                  {c.cameraCode} · Serial {c.serialNumber}
+                  {c.firmwareVersion ? ` · Firmware ${c.firmwareVersion}` : ''}
+                </p>
+                <p className="text-xs text-(--color-text-faint)">
+                  Last seen: {c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : 'Never'}
+                  {' · '}Credential: {c.credentialSetAt ? `issued ${new Date(c.credentialSetAt).toLocaleDateString()}` : 'not issued'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge status={c.connectivity} />
+                <StatusBadge status={c.status} />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={() => onViewStream(c.id)} disabled={busyCameraId === c.id}>
+                View stream
+              </Button>
+              {canManageCameras && c.status !== 'RETIRED' && (
+                <Button variant="secondary" size="sm" onClick={() => onRotateCameraCredential(c.id)} disabled={busyCameraId === c.id}>
+                  {c.credentialSetAt ? 'Rotate credential' : 'Issue credential'}
+                </Button>
               )}
-              {issuedCameraCredential?.cameraId === c.id && (
-                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-                  <p className="font-medium">Copy this credential now — it will not be shown again:</p>
-                  <code className="mt-1 block break-all font-mono">{issuedCameraCredential.token}</code>
-                </div>
+              {canManageCameras && c.status === 'ACTIVE' && (
+                <Button variant="secondary" size="sm" onClick={() => onMarkCameraFault(c.id)} disabled={busyCameraId === c.id}>
+                  Mark fault
+                </Button>
+              )}
+              {canManageCameras && c.status !== 'RETIRED' && (
+                <Button variant="danger" size="sm" onClick={() => setConfirmArchiveCamera(c)} disabled={busyCameraId === c.id}>
+                  Retire
+                </Button>
               )}
             </div>
-          ))}
+            {streamMessage?.cameraId === c.id && (
+              <p className="rounded-(--radius-sm) bg-(--color-surface-sunken) px-3 py-2 text-xs text-(--color-text-muted)">
+                {streamMessage.message}
+              </p>
+            )}
+            {issuedCameraCredential?.cameraId === c.id && (
+              <div className="rounded-(--radius-sm) border border-(--color-warning-border) bg-(--color-warning-bg) px-3 py-2 text-xs text-(--color-warning-text)">
+                <p className="font-medium">Copy this credential now — it will not be shown again:</p>
+                <code className="mt-1 block break-all font-mono">{issuedCameraCredential.token}</code>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      ))}
 
-          {canManageCameras && (
-            <form onSubmit={onCreateCamera} className="grid grid-cols-2 gap-2 pt-2">
+      {canManageCameras && (
+        <Card>
+          <CardBody>
+            <form onSubmit={onCreateCamera} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormField label="Camera code" htmlFor="cameraCode">
                 <Input id="cameraCode" required value={cameraCode} onChange={(e) => setCameraCode(e.target.value)} />
               </FormField>
@@ -538,14 +520,83 @@ function BusEditForm({
               <FormField label="Serial number" htmlFor="cameraSerialNumber">
                 <Input id="cameraSerialNumber" required value={cameraSerialNumber} onChange={(e) => setCameraSerialNumber(e.target.value)} />
               </FormField>
-              <Button type="submit" loading={creatingCamera} className="col-span-2">
+              <Button type="submit" icon={Plus} loading={creatingCamera} className="sm:col-span-2">
                 Add camera
               </Button>
             </form>
-          )}
-          {cameraError && <p className="text-sm text-red-600 dark:text-red-400">{cameraError}</p>}
-        </div>
+          </CardBody>
+        </Card>
       )}
+      {cameraError && <p className="text-sm text-(--color-danger-text)">{cameraError}</p>}
+    </div>
+  );
+
+  const gpsTab = (
+    <Card>
+      <CardBody>
+        {location && (location.latitude !== null || location.deviceLastSeenAt) ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="flex items-center gap-1.5 text-sm text-(--color-text)">
+                  <MapPin className="h-4 w-4 text-(--color-text-faint)" />
+                  {location.latitude !== null && location.longitude !== null
+                    ? `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`
+                    : 'No fix received yet'}
+                  {location.speedKmh !== null ? ` · ${location.speedKmh.toFixed(0)} km/h` : ''}
+                </p>
+                <p className="mt-1 text-xs text-(--color-text-faint)">
+                  Last fix: {location.recordedAt ? new Date(location.recordedAt).toLocaleString() : 'Never'}
+                  {' · '}Device last seen: {location.deviceLastSeenAt ? new Date(location.deviceLastSeenAt).toLocaleString() : 'Never'}
+                </p>
+              </div>
+              <StatusBadge status={location.freshness} />
+            </div>
+            {location.latitude !== null && location.longitude !== null && (
+              <LiveMap
+                heightClassName="h-64"
+                markers={[
+                  {
+                    id: current.id,
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    heading: location.heading,
+                    tone: location.freshness === 'LIVE' ? 'success' : location.freshness === 'STALE' ? 'warning' : 'neutral',
+                    label: current.registrationNumber,
+                  },
+                ]}
+              />
+            )}
+          </div>
+        ) : (
+          <EmptyState title="No telemetry yet" description="This bus has not reported a GPS position." />
+        )}
+      </CardBody>
+    </Card>
+  );
+
+  const tabs: TabItem[] = [
+    { id: 'overview', label: 'Overview', content: overviewTab },
+    { id: 'devices', label: 'Devices', content: devicesTab },
+    ...(canReadCameras ? [{ id: 'cameras', label: 'Cameras', content: camerasTab }] : []),
+    { id: 'gps', label: 'GPS', content: gpsTab },
+  ];
+
+  return (
+    <div className="max-w-3xl">
+      <PageHeader
+        breadcrumbs={[{ label: 'Buses', href: '/dashboard/buses' }, { label: current.registrationNumber }]}
+        title={current.registrationNumber}
+        description={current.fleetNumber ? `Fleet #${current.fleetNumber}` : 'No fleet number'}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
+          </div>
+        }
+      />
+
+      <Tabs items={tabs} />
 
       <ConfirmDialog
         open={!!confirmArchiveCamera}

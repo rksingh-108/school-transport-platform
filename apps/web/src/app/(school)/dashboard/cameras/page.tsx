@@ -4,11 +4,17 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { listCameras } from '@/lib/api/cameras';
 import { useAsync } from '@/lib/use-async';
+import { useDebounce } from '@/lib/use-debounce';
+import { useCursorPagination } from '@/lib/use-cursor-pagination';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
-import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
+import { PageHeader } from '@/components/ui/page-header';
+import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
+import { CursorPagination } from '@/components/ui/pagination';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState } from '@/components/ui/states';
+import type { CameraDto } from '@school-transport/shared-types';
 
 /**
  * School-wide, read-only camera inventory view. Creating/editing a camera
@@ -18,62 +24,69 @@ import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
  * bus detail page). See docs/adr/0018-camera-device-management-foundation.md.
  */
 export default function CamerasPage() {
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebounce(searchInput);
   const [status, setStatus] = useState('');
-  const [pageCursor, setPageCursor] = useState<string | null>(null);
-  const [cursorStack, setCursorStack] = useState<string[]>([]);
+  const pagination = useCursorPagination();
 
   const { data: page, error, loading, reload } = useAsync(
-    () => listCameras({ limit: 20, cursor: pageCursor ?? undefined, search: search || undefined, status: status || undefined }),
-    [search, status, pageCursor],
+    () => listCameras({ limit: 20, cursor: pagination.cursor ?? undefined, search: search || undefined, status: status || undefined }),
+    [search, status, pagination.cursor],
   );
-
-  function resetToFirstPage() {
-    setPageCursor(null);
-    setCursorStack([]);
-  }
-
-  function nextPage() {
-    if (!page?.nextCursor) return;
-    setCursorStack((s) => [...s, pageCursor ?? '']);
-    setPageCursor(page.nextCursor);
-  }
-
-  function prevPage() {
-    setCursorStack((s) => {
-      const copy = [...s];
-      const prev = copy.pop();
-      setPageCursor(prev || null);
-      return copy;
-    });
-  }
 
   const items = page?.data ?? [];
 
+  const columns: DataTableColumn<CameraDto>[] = [
+    {
+      key: 'camera',
+      header: 'Camera',
+      render: (c) => (
+        <Link href={`/dashboard/buses/${c.busId}`} className="font-medium text-(--color-text) hover:text-(--color-brand-text)">
+          {c.name}
+          <span className="block text-xs font-normal text-(--color-text-faint)">{c.cameraCode}</span>
+        </Link>
+      ),
+    },
+    { key: 'position', header: 'Position', render: (c) => (c.position === 'CUSTOM' ? c.customPositionLabel : c.position) },
+    {
+      key: 'bus',
+      header: 'Bus',
+      render: (c) => (
+        <Link href={`/dashboard/buses/${c.busId}`} className="text-(--color-brand-text) hover:underline">
+          View bus
+        </Link>
+      ),
+    },
+    { key: 'status', header: 'Status', render: (c) => <StatusBadge status={c.status} /> },
+    { key: 'connectivity', header: 'Connectivity', render: (c) => <StatusBadge status={c.connectivity} /> },
+    {
+      key: 'lastSeen',
+      header: 'Last seen',
+      render: (c) => <span className="text-(--color-text-muted)">{c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : 'Never'}</span>,
+    },
+  ];
+
   return (
     <div>
-      <div className="mb-4">
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Cameras</h1>
-        <p className="text-sm text-zinc-500">To add or edit a camera, open the bus it is mounted on.</p>
-      </div>
+      <PageHeader title="Cameras" description="To add or edit a camera, open the bus it is mounted on." />
 
-      <div className="mb-4 flex gap-3">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row">
         <Input
           placeholder="Search by name or camera code"
-          value={search}
+          value={searchInput}
           onChange={(e) => {
-            setSearch(e.target.value);
-            resetToFirstPage();
+            setSearchInput(e.target.value);
+            pagination.reset();
           }}
-          className="max-w-xs"
+          className="sm:max-w-xs"
         />
         <Select
           value={status}
           onChange={(e) => {
             setStatus(e.target.value);
-            resetToFirstPage();
+            pagination.reset();
           }}
-          className="max-w-[160px]"
+          className="sm:max-w-[180px]"
         >
           <option value="">All statuses</option>
           <option value="ACTIVE">Active</option>
@@ -83,63 +96,16 @@ export default function CamerasPage() {
         </Select>
       </div>
 
-      {loading && <LoadingState label="Loading cameras…" />}
+      {loading && <TableSkeleton columns={6} />}
       {!loading && !!error && (
         <ErrorState message={error instanceof ApiError ? error.message : 'Failed to load cameras.'} onRetry={reload} />
       )}
       {!loading && !error && items.length === 0 && (
         <EmptyState title="No cameras found" description="Try adjusting your search or filters." />
       )}
+      {!loading && !error && items.length > 0 && <DataTable columns={columns} rows={items} getRowKey={(c) => c.id} />}
       {!loading && !error && items.length > 0 && (
-        <>
-          <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-            <table className="w-full text-sm">
-              <thead className="bg-zinc-50 text-left text-xs uppercase text-zinc-500 dark:bg-zinc-900">
-                <tr>
-                  <th className="px-4 py-2">Camera</th>
-                  <th className="px-4 py-2">Position</th>
-                  <th className="px-4 py-2">Bus</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Connectivity</th>
-                  <th className="px-4 py-2">Last seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((c) => (
-                  <tr key={c.id} className="border-t border-zinc-100 dark:border-zinc-800">
-                    <td className="px-4 py-2">
-                      <Link href={`/dashboard/buses/${c.busId}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
-                        {c.name}
-                      </Link>
-                      <p className="text-xs text-zinc-500">{c.cameraCode}</p>
-                    </td>
-                    <td className="px-4 py-2">{c.position === 'CUSTOM' ? c.customPositionLabel : c.position}</td>
-                    <td className="px-4 py-2">
-                      <Link href={`/dashboard/buses/${c.busId}`} className="hover:underline">
-                        View bus
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2">
-                      <StatusBadge status={c.status} />
-                    </td>
-                    <td className="px-4 py-2">
-                      <StatusBadge status={c.connectivity} />
-                    </td>
-                    <td className="px-4 py-2 text-zinc-500">{c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : 'Never'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 flex justify-end gap-2">
-            <Button variant="secondary" disabled={cursorStack.length === 0} onClick={prevPage}>
-              Previous
-            </Button>
-            <Button variant="secondary" disabled={!page?.nextCursor} onClick={nextPage}>
-              Next
-            </Button>
-          </div>
-        </>
+        <CursorPagination hasPrev={pagination.hasPrev} hasNext={!!page?.nextCursor} onPrev={pagination.prev} onNext={() => pagination.next(page?.nextCursor)} />
       )}
     </div>
   );

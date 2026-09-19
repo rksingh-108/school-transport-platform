@@ -3,14 +3,17 @@
 import { useCallback, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { ParentChildTransportUpdatedEvent, ParentTransportDto } from '@school-transport/shared-types';
+import { ArrowLeft, MapPin, Wifi, WifiOff } from 'lucide-react';
 import { getChildTransport } from '@/lib/api/parents';
 import { useParentSocket } from '@/lib/realtime/parent-socket';
-import { RequireAuth } from '@/components/require-auth';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { IconButton } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/badge';
+import { Card, CardBody } from '@/components/ui/card';
+import { BoardingStepper } from '@/components/parent-boarding-stepper';
 import { LoadingState, ErrorState } from '@/components/ui/states';
+import { LiveMap, type LiveMapMarker } from '@/components/ui/map/live-map';
 
 function formatRelative(iso: string | null): string {
   if (!iso) return 'Never';
@@ -30,7 +33,7 @@ function errorMessage(error: unknown): string {
   return 'Something went wrong.';
 }
 
-function ChildDetail() {
+export default function ChildDetailPage() {
   const { studentId } = useParams<{ studentId: string }>();
   const router = useRouter();
   const { data, error, loading, reload } = useAsync(() => getChildTransport(studentId), [studentId]);
@@ -69,95 +72,124 @@ function ChildDetail() {
     : data;
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-8">
-      <Button variant="secondary" onClick={() => router.back()} className="mb-4">
-        Back
-      </Button>
-
-      <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{view.child.fullName}</h1>
-      <p className="mb-6 text-sm text-zinc-500">
-        {view.child.grade ? `Grade ${view.child.grade}` : 'Grade —'} {view.child.section ? `· Section ${view.child.section}` : ''}
-      </p>
+    <div>
+      <div className="mb-4 flex items-center gap-2">
+        <IconButton icon={ArrowLeft} label="Back" onClick={() => router.back()} />
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold text-(--color-text)">{view.child.fullName}</h1>
+          <p className="text-xs text-(--color-text-faint)">
+            {view.child.grade ? `Grade ${view.child.grade}` : 'Grade —'} {view.child.section ? `· Section ${view.child.section}` : ''}
+          </p>
+        </div>
+      </div>
 
       {!view.trip && (
-        <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center dark:border-zinc-700">
-          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">No active trip right now.</p>
-        </div>
+        <Card className="border-dashed">
+          <CardBody className="text-center">
+            <p className="text-sm font-medium text-(--color-text-muted)">No active trip right now.</p>
+          </CardBody>
+        </Card>
       )}
 
       {view.trip && (
-        <div className="space-y-4">
-          <div className="rounded-lg border border-zinc-200 px-4 py-4 dark:border-zinc-800">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {view.trip.direction === 'HOME_TO_SCHOOL' ? 'Morning trip' : 'Afternoon trip'}
+        <div className="space-y-3">
+          <Card>
+            <CardBody>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-(--color-text)">
+                  {view.trip.direction === 'HOME_TO_SCHOOL' ? 'Morning trip' : 'Afternoon trip'}
+                </p>
+                <StatusBadge status={view.trip.status} />
+              </div>
+              <p className="mt-1 text-xs text-(--color-text-faint)">
+                Scheduled {view.trip.scheduledStartTime} – {view.trip.scheduledEndTime}
               </p>
-              <StatusBadge status={view.trip.status} />
-            </div>
-            <p className="mt-1 text-xs text-zinc-500">
-              Scheduled {view.trip.scheduledStartTime} – {view.trip.scheduledEndTime}
-            </p>
-            {view.bus && <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{view.bus.displayName}</p>}
-          </div>
+              {view.bus && <p className="mt-1.5 text-sm text-(--color-text-muted)">{view.bus.displayName}</p>}
+            </CardBody>
+          </Card>
 
           {view.attendance && (
-            <div className="rounded-lg border border-zinc-200 px-4 py-4 dark:border-zinc-800">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Boarding status</p>
-                <StatusBadge status={view.attendance.status} />
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-500">
-                <p>Boarded: {formatTime(view.attendance.boardedAt)}</p>
-                <p>Dropped off: {formatTime(view.attendance.droppedOffAt)}</p>
-              </div>
-            </div>
+            <Card>
+              <CardBody>
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-(--color-text)">Boarding status</p>
+                  <StatusBadge status={view.attendance.status} />
+                </div>
+                <div className="mt-3">
+                  <BoardingStepper attendanceStatus={view.attendance.status} tripStatus={view.trip.status} />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--color-text-faint)">
+                  <p>Boarded: {formatTime(view.attendance.boardedAt)}</p>
+                  <p>Dropped off: {formatTime(view.attendance.droppedOffAt)}</p>
+                </div>
+              </CardBody>
+            </Card>
           )}
 
           {view.trip.status === 'CANCELLED' && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300">
+            <div className="rounded-(--radius-lg) border border-(--color-danger-border) bg-(--color-danger-bg) p-4 text-sm text-(--color-danger-text)">
               Today&apos;s trip was cancelled.
             </div>
           )}
 
           {view.trip.status === 'IN_PROGRESS' && (
-            <div className="rounded-lg border border-zinc-200 px-4 py-4 dark:border-zinc-800">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Bus location</p>
-                {view.location && <StatusBadge status={view.location.freshness} />}
-              </div>
-              {view.location && view.location.latitude !== null && view.location.longitude !== null ? (
-                <>
-                  <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    {view.location.latitude.toFixed(5)}, {view.location.longitude.toFixed(5)}
-                    {view.location.speedKmh !== null ? ` · ${view.location.speedKmh.toFixed(0)} km/h` : ''}
+            <Card>
+              <CardBody>
+                <div className="flex items-center justify-between">
+                  <p className="flex items-center gap-1.5 text-sm font-semibold text-(--color-text)">
+                    <MapPin className="h-4 w-4 text-(--color-text-faint)" /> Bus location
                   </p>
-                  <p className="mt-1 text-xs text-zinc-500">Last updated {formatRelative(view.location.lastUpdatedAt)}</p>
-                </>
-              ) : (
-                <p className="mt-2 text-sm text-zinc-500">Bus location is currently unavailable.</p>
-              )}
-            </div>
+                  {view.location && <StatusBadge status={view.location.freshness} />}
+                </div>
+                {view.location && view.location.latitude !== null && view.location.longitude !== null ? (
+                  <>
+                    <div className="mt-3">
+                      <LiveMap
+                        heightClassName="h-64"
+                        markers={[
+                          {
+                            id: 'child-bus',
+                            latitude: view.location.latitude,
+                            longitude: view.location.longitude,
+                            heading: view.location.heading,
+                            tone: view.location.freshness === 'LIVE' ? 'success' : view.location.freshness === 'STALE' ? 'warning' : 'neutral',
+                            label: view.bus?.displayName ?? 'Bus',
+                          } satisfies LiveMapMarker,
+                        ]}
+                      />
+                    </div>
+                    <p className="mt-2 text-sm text-(--color-text)">
+                      {view.location.latitude.toFixed(5)}, {view.location.longitude.toFixed(5)}
+                      {view.location.speedKmh !== null ? ` · ${view.location.speedKmh.toFixed(0)} km/h` : ''}
+                    </p>
+                    <p className="mt-1 text-xs text-(--color-text-faint)">Last updated {formatRelative(view.location.lastUpdatedAt)}</p>
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm text-(--color-text-muted)">Bus location is currently unavailable.</p>
+                )}
+              </CardBody>
+            </Card>
           )}
 
           {view.trip.status !== 'IN_PROGRESS' && (view.trip.status === 'SCHEDULED' || view.trip.status === 'READY') && (
-            <p className="text-center text-sm text-zinc-500">No live bus location yet — the trip hasn&apos;t started.</p>
+            <p className="text-center text-sm text-(--color-text-faint)">No live bus location yet — the trip hasn&apos;t started.</p>
           )}
         </div>
       )}
 
       {view.trip?.status === 'IN_PROGRESS' && (
-        <p className="mt-6 text-center text-xs text-zinc-400">
-          {socketStatus === 'connected' ? 'Live updates on' : socketStatus === 'reconnecting' ? 'Reconnecting…' : ''}
+        <p className="mt-6 flex items-center justify-center gap-1.5 text-center text-xs text-(--color-text-faint)">
+          {socketStatus === 'connected' ? (
+            <>
+              <Wifi className="h-3.5 w-3.5 text-(--color-success-solid)" /> Live updates on
+            </>
+          ) : socketStatus === 'reconnecting' ? (
+            <>
+              <WifiOff className="h-3.5 w-3.5 text-(--color-warning-solid)" /> Reconnecting…
+            </>
+          ) : null}
         </p>
       )}
     </div>
-  );
-}
-
-export default function ChildDetailPage() {
-  return (
-    <RequireAuth audience="PARENT">
-      <ChildDetail />
-    </RequireAuth>
   );
 }

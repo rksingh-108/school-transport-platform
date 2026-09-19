@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { Button } from './button';
+import { Dialog } from './dialog';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -16,7 +17,6 @@ interface ConfirmDialogProps {
   children?: ReactNode;
 }
 
-/** A real modal — never `window.confirm()`, which can't be styled, tested, or made accessible consistently. */
 export function ConfirmDialog({
   open,
   title,
@@ -28,30 +28,24 @@ export function ConfirmDialog({
   onCancel,
   children,
 }: ConfirmDialogProps) {
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
-    >
-      <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-900">
-        <h2 id="confirm-dialog-title" className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-          {title}
-        </h2>
-        {description && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{description}</p>}
-        {children && <div className="mt-3">{children}</div>}
-        <div className="mt-5 flex justify-end gap-2">
+    <Dialog
+      open={open}
+      onClose={onCancel}
+      title={title}
+      description={description}
+      footer={
+        <>
           <Button variant="secondary" onClick={onCancel} disabled={loading}>
             Cancel
           </Button>
           <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} loading={loading}>
             {confirmLabel}
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </Dialog>
   );
 }

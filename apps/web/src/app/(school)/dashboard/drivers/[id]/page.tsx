@@ -3,13 +3,18 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { DriverDto } from '@school-transport/shared-types';
+import { ArrowLeft } from 'lucide-react';
 import { activateDriver, deactivateDriver, getDriver, updateDriver } from '@/lib/api/drivers';
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
+import { Avatar } from '@/components/ui/avatar';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
 import { LoadingState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
@@ -30,6 +35,7 @@ export default function DriverDetailPage() {
 
 function DriverEditForm({ driver }: { driver: DriverDto }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('drivers.manage');
 
@@ -47,6 +53,7 @@ function DriverEditForm({ driver }: { driver: DriverDto }) {
     try {
       const updated = await updateDriver(current.id, { licenseNumber, licenseExpiry: licenseExpiry || undefined });
       setCurrent(updated);
+      toast.success('Driver saved');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -61,6 +68,7 @@ function DriverEditForm({ driver }: { driver: DriverDto }) {
       const updated = current.status === 'ACTIVE' ? await deactivateDriver(current.id) : await activateDriver(current.id);
       setCurrent(updated);
       setConfirmToggle(false);
+      toast.success(current.status === 'ACTIVE' ? 'Driver deactivated' : 'Driver activated');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to update status.');
     } finally {
@@ -70,46 +78,55 @@ function DriverEditForm({ driver }: { driver: DriverDto }) {
 
   return (
     <div className="max-w-lg space-y-6">
-      <div className="flex items-center justify-between">
+      <PageHeader
+        breadcrumbs={[{ label: 'Drivers', href: '/dashboard/drivers' }, { label: current.fullName }]}
+        title={current.fullName}
+        description={current.email}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
+          </div>
+        }
+      />
+
+      <div className="flex items-center gap-3">
+        <Avatar name={current.fullName} size="lg" />
         <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.fullName}</h1>
-          <p className="text-sm text-zinc-500">{current.email}</p>
+          <p className="text-sm font-medium text-(--color-text)">{current.fullName}</p>
+          <p className="text-xs text-(--color-text-faint)">{current.email}</p>
         </div>
-        <StatusBadge status={current.status} />
       </div>
 
-      <div className="space-y-4">
-        <FormField label="License number" htmlFor="licenseNumber">
-          <Input id="licenseNumber" value={licenseNumber} disabled={!canManage} onChange={(e) => setLicenseNumber(e.target.value)} />
-        </FormField>
-        <FormField label="License expiry" htmlFor="licenseExpiry">
-          <Input
-            id="licenseExpiry"
-            type="date"
-            value={licenseExpiry}
-            disabled={!canManage}
-            onChange={(e) => setLicenseExpiry(e.target.value)}
-          />
-        </FormField>
-        {canManage && (
-          <Button onClick={onSave} loading={saving}>
-            Save changes
-          </Button>
-        )}
-      </div>
-
-      {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
-
-      <div className="flex justify-between border-t border-zinc-200 pt-4 dark:border-zinc-800">
-        <Button variant="secondary" onClick={() => router.back()}>
-          Back
-        </Button>
-        {canManage && (
-          <Button variant={current.status === 'ACTIVE' ? 'danger' : 'primary'} onClick={() => setConfirmToggle(true)}>
-            {current.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-          </Button>
-        )}
-      </div>
+      <Card>
+        <CardBody className="space-y-4">
+          <FormField label="License number" htmlFor="licenseNumber">
+            <Input id="licenseNumber" value={licenseNumber} disabled={!canManage} onChange={(e) => setLicenseNumber(e.target.value)} />
+          </FormField>
+          <FormField label="License expiry" htmlFor="licenseExpiry">
+            <Input
+              id="licenseExpiry"
+              type="date"
+              value={licenseExpiry}
+              disabled={!canManage}
+              onChange={(e) => setLicenseExpiry(e.target.value)}
+            />
+          </FormField>
+          {actionError && <p className="text-sm text-(--color-danger-text)">{actionError}</p>}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-(--color-border) pt-4">
+            {canManage && (
+              <Button onClick={onSave} loading={saving}>
+                Save changes
+              </Button>
+            )}
+            {canManage && (
+              <Button variant={current.status === 'ACTIVE' ? 'danger' : 'primary'} onClick={() => setConfirmToggle(true)}>
+                {current.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+              </Button>
+            )}
+          </div>
+        </CardBody>
+      </Card>
 
       <ConfirmDialog
         open={confirmToggle}

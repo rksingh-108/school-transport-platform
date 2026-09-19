@@ -35,8 +35,8 @@ export function RequireAuth({
 
   if (status === 'loading' || status === 'unauthenticated' || (principal && principal.type !== audience)) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Spinner />
+      <div className="flex min-h-screen items-center justify-center bg-(--color-surface-sunken)">
+        <Spinner className="h-6 w-6" />
       </div>
     );
   }

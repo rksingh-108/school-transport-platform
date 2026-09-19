@@ -11,14 +11,21 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
-import { FormField, Input, Select } from '@/components/ui/field';
+import { FormField, Input, Select, Switch } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
-import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardBody } from '@/components/ui/card';
+import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState } from '@/components/ui/states';
+import type { AiSafetyPolicyDto } from '@school-transport/shared-types';
 
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
 
 export default function AiSafetyPoliciesPage() {
+  const toast = useToast();
   const { principal } = useAuth();
   const canManage = principal?.type === 'STAFF' && principal.permissions.includes('ai_safety_policies.manage');
 
@@ -39,6 +46,7 @@ export default function AiSafetyPoliciesPage() {
     try {
       await createAiSafetyPolicy({ detectionType, minimumConfidence: Number(minimumConfidence), defaultSeverity });
       setShowCreate(false);
+      toast.success('Policy created');
       reload();
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Unable to create this policy.');
@@ -53,6 +61,8 @@ export default function AiSafetyPoliciesPage() {
       if (enabled) await disableAiSafetyPolicy(id);
       else await enableAiSafetyPolicy(id);
       reload();
+    } catch (err) {
+      toast.error('Unable to update policy', err instanceof ApiError ? err.message : undefined);
     } finally {
       setBusyId(null);
     }
@@ -60,79 +70,64 @@ export default function AiSafetyPoliciesPage() {
 
   const items = policies ?? [];
 
+  const columns: DataTableColumn<AiSafetyPolicyDto>[] = [
+    { key: 'type', header: 'Detection type', render: (p) => <span className="font-medium text-(--color-text)">{p.detectionType.replace(/_/g, ' ')}</span> },
+    { key: 'confidence', header: 'Min. confidence', render: (p) => `${(p.minimumConfidence * 100).toFixed(0)}%` },
+    { key: 'severity', header: 'Default severity', render: (p) => <StatusBadge status={p.defaultSeverity} /> },
+    {
+      key: 'enabled',
+      header: 'Enabled',
+      render: (p) =>
+        canManage ? (
+          <Switch checked={p.enabled} onChange={() => onToggle(p.id, p.enabled)} disabled={busyId === p.id} label={`${p.enabled ? 'Disable' : 'Enable'} policy`} />
+        ) : (
+          <StatusBadge status={p.enabled ? 'ACTIVE' : 'INACTIVE'} />
+        ),
+    },
+  ];
+
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">AI Safety Policies</h1>
-          <p className="text-sm text-zinc-500">
-            Per-detection-type promotion rules — whether a detection can become a safety event, at what confidence, and its default severity. A detection type with no policy here falls back to a conservative system default.
-          </p>
-        </div>
-        {canManage && <Button onClick={() => setShowCreate((v) => !v)}>{showCreate ? 'Cancel' : 'New policy'}</Button>}
-      </div>
+      <PageHeader
+        title="AI Safety Policies"
+        description="Per-detection-type promotion rules — whether a detection can become a safety event, at what confidence, and its default severity. A detection type with no policy here falls back to a conservative system default."
+        actions={canManage && <Button onClick={() => setShowCreate((v) => !v)}>{showCreate ? 'Cancel' : 'New policy'}</Button>}
+      />
 
       {showCreate && canManage && (
-        <form onSubmit={onCreate} className="mb-6 grid grid-cols-2 gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-          <FormField label="Detection type" htmlFor="detectionType">
-            <Select id="detectionType" value={detectionType} onChange={(e) => setDetectionType(e.target.value as typeof detectionType)}>
-              {AI_SAFETY_POLICY_DETECTION_TYPES.map((t) => (
-                <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
-              ))}
-            </Select>
-          </FormField>
-          <FormField label="Minimum confidence (0.5–1.0)" htmlFor="minimumConfidence">
-            <Input id="minimumConfidence" type="number" step="0.01" min={0.5} max={1} required value={minimumConfidence} onChange={(e) => setMinimumConfidence(e.target.value)} />
-          </FormField>
-          <FormField label="Default severity" htmlFor="defaultSeverity">
-            <Select id="defaultSeverity" value={defaultSeverity} onChange={(e) => setDefaultSeverity(e.target.value as typeof defaultSeverity)}>
-              {SEVERITIES.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </Select>
-          </FormField>
-          <div className="col-span-2 flex items-center gap-3">
-            <Button type="submit" loading={creating}>Create</Button>
-            {createError && <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>}
-          </div>
-        </form>
+        <Card className="mb-6">
+          <CardBody>
+            <form onSubmit={onCreate} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormField label="Detection type" htmlFor="detectionType">
+                <Select id="detectionType" value={detectionType} onChange={(e) => setDetectionType(e.target.value as typeof detectionType)}>
+                  {AI_SAFETY_POLICY_DETECTION_TYPES.map((t) => (
+                    <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+                  ))}
+                </Select>
+              </FormField>
+              <FormField label="Minimum confidence (0.5–1.0)" htmlFor="minimumConfidence">
+                <Input id="minimumConfidence" type="number" step="0.01" min={0.5} max={1} required value={minimumConfidence} onChange={(e) => setMinimumConfidence(e.target.value)} />
+              </FormField>
+              <FormField label="Default severity" htmlFor="defaultSeverity">
+                <Select id="defaultSeverity" value={defaultSeverity} onChange={(e) => setDefaultSeverity(e.target.value as typeof defaultSeverity)}>
+                  {SEVERITIES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </Select>
+              </FormField>
+              <div className="sm:col-span-2 flex items-center gap-3">
+                <Button type="submit" loading={creating}>Create</Button>
+                {createError && <p className="text-sm text-(--color-danger-text)">{createError}</p>}
+              </div>
+            </form>
+          </CardBody>
+        </Card>
       )}
 
-      {loading && <LoadingState label="Loading policies…" />}
+      {loading && <TableSkeleton columns={4} />}
       {!loading && !!error && <ErrorState message={error instanceof ApiError ? error.message : 'Failed to load policies.'} onRetry={reload} />}
       {!loading && !error && items.length === 0 && <EmptyState title="No custom policies configured" description="Every detection type is using the conservative system default." />}
-      {!loading && !error && items.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50 text-left text-xs uppercase text-zinc-500 dark:bg-zinc-900">
-              <tr>
-                <th className="px-4 py-2">Detection type</th>
-                <th className="px-4 py-2">Min. confidence</th>
-                <th className="px-4 py-2">Default severity</th>
-                <th className="px-4 py-2">Status</th>
-                {canManage && <th className="px-4 py-2" />}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((p) => (
-                <tr key={p.id} className="border-t border-zinc-100 dark:border-zinc-800">
-                  <td className="px-4 py-2 font-medium text-zinc-900 dark:text-zinc-100">{p.detectionType.replace(/_/g, ' ')}</td>
-                  <td className="px-4 py-2 text-zinc-500">{(p.minimumConfidence * 100).toFixed(0)}%</td>
-                  <td className="px-4 py-2"><StatusBadge status={p.defaultSeverity} /></td>
-                  <td className="px-4 py-2"><StatusBadge status={p.enabled ? 'ACTIVE' : 'INACTIVE'} /></td>
-                  {canManage && (
-                    <td className="px-4 py-2">
-                      <Button variant="secondary" disabled={busyId === p.id} onClick={() => onToggle(p.id, p.enabled)}>
-                        {p.enabled ? 'Disable' : 'Enable'}
-                      </Button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {!loading && !error && items.length > 0 && <DataTable columns={columns} rows={items} getRowKey={(p) => p.id} />}
     </div>
   );
 }

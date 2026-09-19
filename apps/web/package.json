@@ -13,13 +13,18 @@
     "@school-transport/shared-schemas": "workspace:*",
     "@school-transport/shared-types": "workspace:*",
     "@school-transport/ui": "workspace:*",
+    "clsx": "^2.1.1",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.37.0",
     "next": "16.3.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-leaflet": "^5.0.0",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.22",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

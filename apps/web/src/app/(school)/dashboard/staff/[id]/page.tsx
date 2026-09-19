@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { StaffDto, RoleKey } from '@school-transport/shared-types';
 import { STAFF_ROLE_KEYS } from '@school-transport/shared-schemas';
+import { ArrowLeft, Mail } from 'lucide-react';
 import {
   activateStaff,
   assignStaffRoles,
@@ -15,9 +16,13 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
-import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/toast';
+import { Button, IconButton } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
 import { StatusBadge } from '@/components/ui/badge';
+import { Avatar } from '@/components/ui/avatar';
+import { PageHeader } from '@/components/ui/page-header';
+import { Card, CardHeader, CardBody } from '@/components/ui/card';
 import { LoadingState, ErrorState } from '@/components/ui/states';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
@@ -38,6 +43,7 @@ export default function StaffDetailPage() {
 
 function StaffEditForm({ staff }: { staff: StaffDto }) {
   const router = useRouter();
+  const toast = useToast();
   const { principal } = useAuth();
   const canUpdate = principal?.type === 'STAFF' && principal.permissions.includes('users.update');
   const canManageRoles = principal?.type === 'STAFF' && principal.permissions.includes('users.manage_roles');
@@ -67,6 +73,7 @@ function StaffEditForm({ staff }: { staff: StaffDto }) {
     try {
       const updated = await updateStaff(current.id, { fullName, email });
       setCurrent(updated);
+      toast.success('Profile saved');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to save changes.');
     } finally {
@@ -81,6 +88,7 @@ function StaffEditForm({ staff }: { staff: StaffDto }) {
       const updated = await assignStaffRoles(current.id, roleKeys);
       setCurrent(updated);
       setRoleKeys(updated.roles);
+      toast.success('Roles updated');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to update roles.');
     } finally {
@@ -108,6 +116,7 @@ function StaffEditForm({ staff }: { staff: StaffDto }) {
       const updated = current.status === 'SUSPENDED' ? await activateStaff(current.id) : await suspendStaff(current.id);
       setCurrent(updated);
       setConfirmSuspend(false);
+      toast.success(current.status === 'SUSPENDED' ? 'Account reactivated' : 'Account suspended');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Unable to update status.');
     } finally {
@@ -116,73 +125,89 @@ function StaffEditForm({ staff }: { staff: StaffDto }) {
   }
 
   return (
-    <div className="max-w-lg space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="max-w-lg space-y-6">
+      <PageHeader
+        breadcrumbs={[{ label: 'Staff', href: '/dashboard/staff' }, { label: current.fullName }]}
+        title={current.fullName}
+        description={current.email}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={current.status} />
+            <IconButton icon={ArrowLeft} label="Back" variant="secondary" onClick={() => router.back()} />
+          </div>
+        }
+      />
+
+      <div className="flex items-center gap-3">
+        <Avatar name={current.fullName} size="lg" />
         <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{current.fullName}</h1>
-          <p className="text-sm text-zinc-500">{current.email}</p>
+          <p className="text-sm font-medium text-(--color-text)">{current.fullName}</p>
+          <p className="flex items-center gap-1 text-xs text-(--color-text-faint)">
+            <Mail className="h-3 w-3" /> {current.email}
+          </p>
         </div>
-        <StatusBadge status={current.status} />
       </div>
 
       {current.status === 'INVITED' && canInvite && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900/40 dark:bg-amber-950/20">
-          <p className="mb-2 text-amber-800 dark:text-amber-300">This invitation has not been accepted yet.</p>
-          <Button variant="secondary" onClick={onResend} loading={busy} disabled={resendDone}>
+        <div className="rounded-(--radius-md) border border-(--color-warning-border) bg-(--color-warning-bg) p-3 text-sm">
+          <p className="mb-2 text-(--color-warning-text)">This invitation has not been accepted yet.</p>
+          <Button variant="secondary" size="sm" onClick={onResend} loading={busy} disabled={resendDone}>
             {resendDone ? 'Invitation resent' : 'Resend invitation'}
           </Button>
         </div>
       )}
 
-      <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Profile</h2>
-        <FormField label="Full name" htmlFor="fullName">
-          <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
-        </FormField>
-        <FormField label="Email" htmlFor="email">
-          <Input id="email" type="email" value={email} disabled={!canUpdate} onChange={(e) => setEmail(e.target.value)} />
-        </FormField>
-        {canUpdate && (
-          <Button onClick={onSaveProfile} loading={saving}>
-            Save profile
-          </Button>
-        )}
-      </div>
+      <Card>
+        <CardHeader title="Profile" />
+        <CardBody className="space-y-4">
+          <FormField label="Full name" htmlFor="fullName">
+            <Input id="fullName" value={fullName} disabled={!canUpdate} onChange={(e) => setFullName(e.target.value)} />
+          </FormField>
+          <FormField label="Email" htmlFor="email">
+            <Input id="email" type="email" value={email} disabled={!canUpdate} onChange={(e) => setEmail(e.target.value)} />
+          </FormField>
+          {canUpdate && (
+            <Button onClick={onSaveProfile} loading={saving}>
+              Save profile
+            </Button>
+          )}
+        </CardBody>
+      </Card>
 
-      <div className="space-y-2">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Roles</h2>
-        <div className="space-y-1.5">
-          {assignableRoles.map((role) => (
-            <label key={role} className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-              <input
-                type="checkbox"
-                disabled={!canManageRoles}
-                checked={roleKeys.includes(role as RoleKey)}
-                onChange={() => toggleRole(role as RoleKey)}
-              />
-              {role}
-            </label>
-          ))}
-        </div>
-        {canManageRoles && (
-          <Button onClick={onSaveRoles} loading={saving}>
-            Save roles
-          </Button>
-        )}
-      </div>
+      <Card>
+        <CardHeader title="Roles" />
+        <CardBody className="space-y-3">
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+            {assignableRoles.map((role) => (
+              <label key={role} className="flex items-center gap-2 rounded-(--radius-sm) px-1 py-1 text-sm text-(--color-text-muted) hover:bg-(--color-surface-sunken)">
+                <input
+                  type="checkbox"
+                  disabled={!canManageRoles}
+                  checked={roleKeys.includes(role as RoleKey)}
+                  onChange={() => toggleRole(role as RoleKey)}
+                  className="h-4 w-4 rounded border-(--color-border-strong) text-(--color-brand) focus:ring-(--color-brand-border)"
+                />
+                {role.replaceAll('_', ' ')}
+              </label>
+            ))}
+          </div>
+          {canManageRoles && (
+            <Button onClick={onSaveRoles} loading={saving}>
+              Save roles
+            </Button>
+          )}
+        </CardBody>
+      </Card>
 
-      {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
+      {actionError && <p className="text-sm text-(--color-danger-text)">{actionError}</p>}
 
-      <div className="flex justify-between border-t border-zinc-200 pt-4 dark:border-zinc-800">
-        <Button variant="secondary" onClick={() => router.back()}>
-          Back
-        </Button>
-        {canUpdate && current.status !== 'INVITED' && current.status !== 'DISABLED' && (
+      {canUpdate && current.status !== 'INVITED' && current.status !== 'DISABLED' && (
+        <div className="flex justify-end">
           <Button variant={current.status === 'SUSPENDED' ? 'primary' : 'danger'} onClick={() => setConfirmSuspend(true)}>
             {current.status === 'SUSPENDED' ? 'Reactivate' : 'Suspend'}
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmSuspend}

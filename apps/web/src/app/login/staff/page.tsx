@@ -1,12 +1,15 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { AlertCircle } from 'lucide-react';
 import { staffLogin } from '@/lib/api/auth';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { FormField, Input } from '@/components/ui/field';
+import { AuthSplitLayout } from '@/components/auth-split-layout';
 
 export default function StaffLoginPage() {
   const router = useRouter();
@@ -36,43 +39,46 @@ export default function StaffLoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <h1 className="mb-1 text-xl font-semibold text-zinc-900 dark:text-zinc-50">Staff sign in</h1>
-        <p className="mb-6 text-sm text-zinc-500">Sign in with your school staff account.</p>
-        <form onSubmit={onSubmit} className="space-y-4" noValidate>
-          <FormField label="Email" htmlFor="email">
-            <Input
-              id="email"
-              type="email"
-              autoComplete="username"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </FormField>
-          <FormField label="Password" htmlFor="password">
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </FormField>
-          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-          <Button type="submit" className="w-full" loading={loading}>
-            Sign in
-          </Button>
-        </form>
-        <p className="mt-6 text-center text-sm text-zinc-500">
-          Parent?{' '}
-          <a href="/login/parent" className="font-medium text-zinc-900 underline dark:text-zinc-100">
-            Sign in here
-          </a>
-        </p>
-      </div>
-    </div>
+    <AuthSplitLayout>
+      <h1 className="mb-1 text-xl font-semibold text-(--color-text)">Staff sign in</h1>
+      <p className="mb-6 text-sm text-(--color-text-muted)">Sign in with your school staff account.</p>
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <FormField label="Email" htmlFor="email">
+          <Input
+            id="email"
+            type="email"
+            autoComplete="username"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </FormField>
+        <FormField label="Password" htmlFor="password">
+          <Input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </FormField>
+        {error && (
+          <p className="flex items-start gap-2 rounded-(--radius-sm) border border-(--color-danger-border) bg-(--color-danger-bg) p-3 text-sm text-(--color-danger-text)">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            {error}
+          </p>
+        )}
+        <Button type="submit" className="w-full" loading={loading}>
+          Sign in
+        </Button>
+      </form>
+      <p className="mt-6 text-center text-sm text-(--color-text-muted)">
+        Parent?{' '}
+        <Link href="/login/parent" className="font-medium text-(--color-brand-text) hover:underline">
+          Sign in here
+        </Link>
+      </p>
+    </AuthSplitLayout>
   );
 }

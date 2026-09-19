@@ -1,14 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import type { NotificationDto } from '@school-transport/shared-types';
 import { getMyNotifications, markAllMyNotificationsRead, markMyNotificationRead } from '@/lib/api/notifications';
-import { RequireAuth } from '@/components/require-auth';
 import { useAsync } from '@/lib/use-async';
 import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { LoadingState, EmptyState, ErrorState } from '@/components/ui/states';
+import { useToast } from '@/components/ui/toast';
+import { cn } from '@/lib/cn';
 
 function formatRelative(iso: string): string {
   const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
@@ -18,16 +18,20 @@ function formatRelative(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function NotificationsList() {
-  const router = useRouter();
+export default function ParentNotificationsPage() {
+  const toast = useToast();
   const { data, error, loading, reload } = useAsync(() => getMyNotifications({ limit: 50 }), []);
   const [items, setItems] = useState<NotificationDto[] | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const current = items ?? data?.data ?? null;
 
   async function onMarkRead(id: string) {
-    const updated = await markMyNotificationRead(id);
-    setItems((prev) => (prev ?? data?.data ?? []).map((n) => (n.id === id ? updated : n)));
+    try {
+      const updated = await markMyNotificationRead(id);
+      setItems((prev) => (prev ?? data?.data ?? []).map((n) => (n.id === id ? updated : n)));
+    } catch (err) {
+      toast.error('Could not mark as read', err instanceof ApiError ? err.message : undefined);
+    }
   }
 
   async function onMarkAllRead() {
@@ -36,6 +40,8 @@ function NotificationsList() {
       await markAllMyNotificationsRead();
       const now = new Date().toISOString();
       setItems((prev) => (prev ?? data?.data ?? []).map((n) => ({ ...n, readAt: n.readAt ?? now })));
+    } catch (err) {
+      toast.error('Could not mark all as read', err instanceof ApiError ? err.message : undefined);
     } finally {
       setMarkingAll(false);
     }
@@ -49,19 +55,15 @@ function NotificationsList() {
   const hasUnread = current.some((n) => !n.readAt);
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
-        <Button variant="secondary" onClick={() => router.back()}>
-          Back
-        </Button>
+    <div>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-(--color-text)">Notifications</h1>
         {hasUnread && (
-          <Button variant="secondary" onClick={onMarkAllRead} loading={markingAll}>
+          <Button variant="secondary" size="sm" onClick={onMarkAllRead} loading={markingAll}>
             Mark all read
           </Button>
         )}
       </div>
-
-      <h1 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-50">Notifications</h1>
 
       {current.length === 0 && <EmptyState title="No notifications yet" />}
       {current.length > 0 && (
@@ -70,28 +72,21 @@ function NotificationsList() {
             <button
               key={n.id}
               onClick={() => !n.readAt && onMarkRead(n.id)}
-              className={`block w-full rounded-lg border px-4 py-3 text-left ${
-                n.readAt ? 'border-zinc-200 dark:border-zinc-800' : 'border-zinc-900 bg-zinc-50 dark:border-zinc-100 dark:bg-zinc-900'
-              }`}
+              className={cn(
+                'block w-full rounded-(--radius-lg) border p-4 text-left shadow-(--shadow-xs) transition-colors',
+                n.readAt ? 'border-(--color-border) bg-(--color-surface)' : 'border-(--color-brand-border) bg-(--color-brand-bg)',
+              )}
             >
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{n.title}</p>
-                {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-red-600" />}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-(--color-text)">{n.title}</p>
+                {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-(--color-danger-solid)" />}
               </div>
-              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{n.body}</p>
-              <p className="mt-1 text-xs text-zinc-400">{formatRelative(n.createdAt)}</p>
+              <p className="mt-1 text-sm text-(--color-text-muted)">{n.body}</p>
+              <p className="mt-1.5 text-xs text-(--color-text-faint)">{formatRelative(n.createdAt)}</p>
             </button>
           ))}
         </div>
       )}
     </div>
-  );
-}
-
-export default function ParentNotificationsPage() {
-  return (
-    <RequireAuth audience="PARENT">
-      <NotificationsList />
-    </RequireAuth>
   );
 }

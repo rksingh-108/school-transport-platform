@@ -2,6 +2,9 @@
 node_modules/
 .pnpm-store/
 
+# start.bat / stop.bat runtime state
+.dev-server.pid
+
 # Build output
 dist/
 build/
@@ -46,4 +49,7 @@ infra/docker/.data/
 # Misc
 *.pem
 .eslintcache
+
+# Freebuff agent workspace metadata (local tooling state, not project code)
+.freebuff/
 
