@@ -23,11 +23,22 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       lazyConnect: true,
       maxRetriesPerRequest: 2,
     });
+    // Without an 'error' listener ioredis re-throws connection/auth errors as
+    // uncaught exceptions, which takes the whole API process down (observed in
+    // production on a bad REDIS_URL). Redis is not required for the API to
+    // serve HTTP traffic — /health/ready reports the degradation instead.
+    this.client.on('error', (error: Error) => {
+      this.logger.warn(`Redis error: ${error.message}`);
+    });
   }
 
   async onModuleInit() {
-    await this.client.connect();
-    this.logger.log('Connected to Redis.');
+    try {
+      await this.client.connect();
+      this.logger.log('Connected to Redis.');
+    } catch (error) {
+      this.logger.error(`Redis connection failed: ${(error as Error).message}`);
+    }
   }
 
   onModuleDestroy() {

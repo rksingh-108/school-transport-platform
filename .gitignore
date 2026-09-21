@@ -18,6 +18,9 @@ out/
 .env.local
 .env.*.local
 !.env.example
+# Azure deployment variables (database/Redis/storage/JWT secrets)
+infra/azure/.env.*
+!infra/azure/.env.example
 
 # Prisma
 prisma/*.db

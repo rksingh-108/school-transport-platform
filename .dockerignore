@@ -1,0 +1,25 @@
+# Never ship local dependencies or build output into an image — each image
+# installs and builds from source.
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+
+# Local tooling / VCS
+.git
+.github
+.freebuff
+.claude
+.windsurf
+*.log
+.dev-server.pid
+
+# Secrets — the app reads them from the environment at runtime, never the image
+.env
+.env.*
+!.env.example
+
+# Local infrastructure data
+infra/docker/.data

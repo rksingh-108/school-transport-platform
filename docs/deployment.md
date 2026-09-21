@@ -1,13 +1,16 @@
 # Deployment & Production Readiness Checklist
 
-Status: Draft v1 — written during the Phase 1 Step 10 hardening pass.
-**This document describes requirements and operational practice, not
-infrastructure that already exists.** No CI/CD pipeline, cloud environment,
-backup automation, or reverse proxy has been provisioned by this codebase —
-`infra/docker-compose.yml` is a **local development convenience**
-(Postgres/Redis/MinIO only, no API/web containers, no TLS), not a
-production orchestration platform. Anything below marked "not yet built"
-is exactly that.
+Status: Draft v2 — updated after the Azure Container Apps deployment.
+**This document describes requirements and operational practice.** A live
+Azure deployment now exists: the API, web app, and MinIO object store run on
+Azure Container Apps with managed PostgreSQL and Redis, HTTPS via the platform
+ingress, and health probes. The concrete resource inventory, provisioning
+commands, and redeploy procedure live in
+[`infra/azure/README.md`](../infra/azure/README.md) — this document still
+describes the *requirements*, and anything marked "not yet built" has not been
+built there either. `infra/docker-compose.yml` remains a **local development
+convenience** (Postgres/Redis/MinIO only, no API/web containers, no TLS).
+There is still **no CI/CD pipeline** — `infra/azure/deploy.sh` is run manually.
 
 ## 1. Required Environment Variables
 
@@ -64,9 +67,13 @@ Every other required variable (`API_DATABASE_URL`, `REDIS_URL`,
   the ADRs referencing schema evolution (e.g. ADR 0010's "Extension"
   sections).
 
-## 4. Backups & Recovery — not yet built
+## 4. Backups & Recovery — partially covered on Azure, no drill performed
 
-**No automated backup exists in this codebase.** Setting it up is an
+On the current Azure deployment, PostgreSQL uses the platform's default
+backups (managed retention + point-in-time restore) and the Redis/object-store
+caveats below still apply. **No restore has ever been performed**, and no
+backup automation exists in this codebase, so recovery remains unverified.
+Setting it up further is an
 infrastructure decision for wherever this is deployed. Practical
 requirements, not yet implemented:
 
@@ -91,14 +98,17 @@ requirements, not yet implemented:
   with the corresponding migration state, or accept forward-fix-only for
   a bad deploy.
 
-## 5. TLS / Reverse Proxy — not yet built
+## 5. TLS / Reverse Proxy — provided by the platform on Azure
 
-The API and web app both listen on plain HTTP locally. Production TLS
-termination (a reverse proxy, load balancer, or platform-managed TLS) is
-an infrastructure decision outside this repository. Whatever terminates
-TLS must forward the real client IP (`X-Forwarded-For` or platform
-equivalent) so `req.ip`-keyed rate limiting (docs/security.md §8) and
-audit `ipAddress` fields reflect the actual client, not the proxy.
+The API and web app both listen on plain HTTP inside the container. In the
+Azure deployment the Container Apps ingress terminates TLS with a managed
+`*.azurecontainerapps.io` certificate, is configured `allowInsecure: false`
+(HTTP is redirected to HTTPS), and forwards the real client IP in
+`X-Forwarded-For`, which the API trusts for `req.ip`-keyed rate limiting
+(docs/security.md §8) and audit `ipAddress` fields. A custom domain with an
+uploaded/managed certificate is **not yet configured**; neither is a WAF or
+CDN. On any other host, whatever terminates TLS must still forward the real
+client IP.
 
 ## 6. CORS / Allowed Origins
 

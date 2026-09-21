@@ -21,6 +21,7 @@
     "db:migrate": "prisma migrate dev --schema=prisma/schema.prisma",
     "db:migrate:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
     "db:seed": "tsx prisma/seed.ts",
+    "db:bootstrap": "tsx prisma/bootstrap.ts",
     "db:studio": "prisma studio --schema=prisma/schema.prisma",
     "docker:up": "docker compose -f infra/docker-compose.yml --env-file .env up -d",
     "docker:down": "docker compose -f infra/docker-compose.yml --env-file .env down",
