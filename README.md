@@ -2,8 +2,8 @@
 
 A multi-tenant SaaS platform for Indian K-12 schools to manage bus transportation:
 fleet, drivers/attendants, routes, live GPS tracking, student boarding, parent
-notifications, and (later phases) camera-assisted safety monitoring and incident
-management.
+notifications, camera and edge-device inventory, safety-event and emergency
+workflows, and geofencing/operational safety rules.
 
 This is a production-oriented commercial platform, not a demo. See
 [docs/product-requirements.md](docs/product-requirements.md) for the full product
@@ -11,10 +11,40 @@ scope and non-negotiable safety/privacy principles.
 
 ## Status
 
-**Phase 0 (foundation) complete.** The monorepo, database schema + Row-Level
-Security, NestJS API skeleton, and Next.js web skeleton are scaffolded and
-verified working end-to-end (see [docs/roadmap.md](docs/roadmap.md)). No product
-features exist yet — that's Phase 1.
+The foundation Phase 0 describes is long past: the transport platform (Phase 1),
+the operational-safety modules (Phase 2), and the edge-AI observation pipeline with
+human review and safety analytics (Phase 3) are implemented in `apps/api` and
+`apps/web`. [docs/roadmap.md](docs/roadmap.md) tracks every step and is explicit
+about what is *not* built — its "Not done" notes are the authority, not this
+paragraph.
+
+Implemented: staff/parent authentication and RBAC, schools/users/students/parents
+with staff invitations, fleet (buses, bus devices, cameras), routes and stops, trips
+and student manifests, boarding attendance, GPS telemetry with real-time bus
+tracking, parent transport tracking, in-app notifications with alert rules, safety
+events and emergency management, geofencing and operational safety rules, edge-AI
+observation ingestion with staff review/promotion, and tenant-scoped safety
+analytics. The API modules ship with unit tests and e2e suites under
+`apps/api/test/`, which CI runs against real Postgres/Redis/MinIO service containers.
+
+Equally explicit about what is *not* claimed:
+
+- **Not a verified production deployment.** There is no CI/CD pipeline; deployment is
+the manual runbook in [infra/azure/README.md](infra/azure/README.md), and
+[docs/deployment.md](docs/deployment.md) records what has and has not been done (no
+load testing, no monitoring stack, no restore drill).
+- **No external notification delivery.** PUSH/SMS/EMAIL are bound to
+`NotConfiguredProvider`, so notifications are recorded in-app and their external
+delivery status is `NOT_CONFIGURED`
+([ADR 0016](docs/adr/0016-notifications-and-alerts.md)).
+- **No computer-vision inference in this codebase** — edge devices submit already
+normalized observations — and no facial/behavioral/identity recognition exists
+anywhere in the schema
+([ADR 0021](docs/adr/0021-edge-ai-computer-vision-pipeline-foundation.md)).
+- **No driver/attendant-facing UI**: that API is complete and tested, but no
+dedicated screens exist (Phase 1 step 15 in [docs/roadmap.md](docs/roadmap.md)).
+
+Phase 4 (enterprise/scale) has not started.
 
 ## Architecture Overview
 
@@ -29,14 +59,15 @@ reasoning behind it in [docs/adr/](docs/adr/).
 ```
 apps/
   api/            NestJS modular monolith (see docs/architecture.md)
-  web/            Next.js app (school console + parent app, built out from Phase 1)
+  web/            Next.js app — school console (/dashboard/*) + parent app (/parent/*)
 packages/
   shared-types/   Hand-written domain types shared by api + web
   shared-schemas/ Zod validation schemas shared by api + web
   config/         Shared TypeScript/ESLint/Prettier presets
-  ui/             Shared design-system components (empty until Phase 1 needs them)
-prisma/           Database schema, migrations, seed script (see docs/database.md)
-infra/            Docker Compose stack + Postgres init scripts
+  ui/             Shared design-system package — still an intentional empty stub;
+                  web UI components live in apps/web/src/components
+prisma/           Database schema, migrations (+ Row-Level Security), seed script
+infra/            Local Docker Compose stack + Postgres init scripts; infra/azure/ runbook
 docs/             Architecture, database, API, security, privacy, AI-safety docs + ADRs
 .github/workflows/ CI (install, lint, typecheck, build, migrate, test)
 ```
@@ -52,7 +83,8 @@ docs/             Architecture, database, API, security, privacy, AI-safety docs
 | [docs/security.md](docs/security.md) | AuthN/AuthZ, RBAC matrix, tenant isolation |
 | [docs/privacy.md](docs/privacy.md) | Child data handling, retention, compliance checklist |
 | [docs/ai-safety.md](docs/ai-safety.md) | AI event taxonomy, human-in-the-loop review, edge architecture |
-| [docs/roadmap.md](docs/roadmap.md) | Phase 1 (MVP) → Phase 4 sequencing |
+| [docs/roadmap.md](docs/roadmap.md) | Phase 1 (MVP) → Phase 4 sequencing, with per-step status |
+| [docs/deployment.md](docs/deployment.md) | Deployment requirements, production-readiness checklist, explicit non-claims |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 
 ## Tech Stack
@@ -90,9 +122,10 @@ Open `.env` and adjust ports if any of `5434` (Postgres), `6379` (Redis), `9000`
 pnpm docker:up      # Postgres, Redis, MinIO (persistent named volumes)
 ```
 
-Check everything is healthy: `docker compose -f infra/docker-compose.yml ps` — all
-three services should show `(healthy)`. `pnpm docker:down` stops them;
-`pnpm docker:logs` tails their logs.
+Check everything is healthy: `docker compose -f infra/docker-compose.yml ps` — the
+three long-running services (Postgres, Redis, MinIO) should show `(healthy)`; the
+one-shot `minio-init` job creates the private bucket and then exits `0`.
+`pnpm docker:down` stops them; `pnpm docker:logs` tails their logs.
 
 ## Database: Migrate and Seed
 
@@ -122,9 +155,9 @@ pnpm --filter @school-transport/api run dev       # just the API (NestJS, watch 
 pnpm --filter @school-transport/web run dev       # just the web app (Next.js)
 ```
 
-API: http://localhost:3001 (health: `/health`, readiness: `/health/ready`,
-versioned API surface: `/api/v1/...` once Phase 1 endpoints exist).
-Web: http://localhost:3000.
+API: http://localhost:3001 — feature endpoints are versioned (`/api/v1/...`), while
+health (`/health`) and readiness (`/health/ready`) are deliberately outside the
+versioned surface so orchestrators can probe a fixed path. Web: http://localhost:3000.
 
 ## Testing
 
@@ -154,5 +187,11 @@ pnpm format      # Prettier, whole repo
 
 `.github/workflows/ci.yml` runs install → lint → typecheck → build → migrate →
 unit tests → e2e/integration tests (against real Postgres/Redis/MinIO service
-containers) → dependency audit, on every push/PR. No deployment step yet — see
-[docs/roadmap.md](docs/roadmap.md).
+containers) → dependency audit, on every push/PR. The audit step is currently
+non-blocking (`continue-on-error`).
+
+There is no CI/CD deployment step — nothing in this repository deploys on push.
+Deployment is a manual runbook: [docs/deployment.md](docs/deployment.md) for the
+requirements and production-readiness checklist, and
+[infra/azure/README.md](infra/azure/README.md) for the provisioning and redeploy
+procedure.
